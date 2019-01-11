@@ -633,17 +633,18 @@ class ApiData(object):
             "cpu": ['cpu_system', 'cpu_user', 'cpu_usage']
         }
 
-        self.pods_Metrics = dict()
+        self.pods_Metrics = dict() # type: Dict[str, Dict[str, List]]
         for metric_group in self.pods_custom_metrics:
             self.pods_Metrics[metric_group] = self.get_namespaced_group_metric(metric_group)
 
     def get_namespaced_group_metric(self, metric_group):
+        # type: (str) -> Dict[str, List]
         queries = [
             self.get_namespaced_custom_pod_metric(metric)
             for metric in self.pods_custom_metrics[metric_group]
         ]
 
-        grouped_metrics = {}
+        grouped_metrics = {} # type: Dict[str, List]
         for response in queries:
             for namespace in response:
                 grouped_metrics.setdefault(namespace, []).append(response[namespace])
@@ -655,6 +656,7 @@ class ApiData(object):
         return grouped_metrics
 
     def get_namespaced_custom_pod_metric(self, metric):
+        # type: (str) -> Dict
 
         logging.debug('Query Custom Metrics Endpoint: %s', metric)
         custom_metric = {}
