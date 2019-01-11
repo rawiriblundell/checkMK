@@ -104,31 +104,15 @@ def parse_cpu(value):
 
 def parse_memory(value):
     # type: (str) -> float
-    if value.endswith('Ki'):
-        return 1024**1 * float(value[:-2])
-    if value.endswith('Mi'):
-        return 1024**2 * float(value[:-2])
-    if value.endswith('Gi'):
-        return 1024**3 * float(value[:-2])
-    if value.endswith('Ti'):
-        return 1024**4 * float(value[:-2])
-    if value.endswith('Pi'):
-        return 1024**5 * float(value[:-2])
-    if value.endswith('Ei'):
-        return 1024**6 * float(value[:-2])
+    if value.endswith('i'):
+        base = 1024
+        value = value[:-1]
+    else:
+        base = 1000
 
-    if value.endswith('K'):
-        return 1e3 * float(value[:-1])
-    if value.endswith('M'):
-        return 1e6 * float(value[:-1])
-    if value.endswith('G'):
-        return 1e9 * float(value[:-1])
-    if value.endswith('T'):
-        return 1e12 * float(value[:-1])
-    if value.endswith('P'):
-        return 1e15 * float(value[:-1])
-    if value.endswith('E'):
-        return 1e18 * float(value[:-1])
+    for p, prefix in enumerate(['K', 'M', 'G', 'T', 'P', 'E'], start=1):
+        if value.endswith(prefix):
+            return base**p * float(value[:-1])
 
     return float(value)
 
