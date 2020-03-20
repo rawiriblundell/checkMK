@@ -1,0 +1,79 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# MK's runas Executor
+# runas.cfg syntax is: [Script type] [User context] [File / Directory]
+# Script type can be 'mrpe', 'local' or 'plugin'
+# User context defines the target user.  Use '-' to skip
+if [ -r "${MK_CONFDIR}/runas.cfg" ]; then
+
+    # For now, we only define this function for this section.
+    runas_user() {
+        _suUser="${1:?No user supplied}"
+        shift
+        _suCmd="${*}"
+        case "${_suUser}" in
+            ('-'|'_'|null )  "${_suCmd}" ;;
+            (*)              su "${_suUser}" -s "${SHELL}" -c "${_suCmd}" ;;
+        esac
+        unset _suUser _suCmd
+    }
+
+    # Filter out lines startng with unwanted characters, then read what's left
+    grep -Ev '^[[:space:]]*($|#)' "${MK_CONFDIR}/runas.cfg" | while read -r type user include; do
+        case "${type}" in
+            (mrpe)
+                grep -Ev '^[[:space:]]*($|#)' "$include" | while read -r descr cmdline; do
+                    # Detect if cmdline starts with '(' i.e. async mode
+                    case "${cmdline}" in
+                        (\(*)
+                            # If we do start with '(', then split 'params' out of 'cmdline'
+                            # We strip the brackets from 'params' and rewrite 'cmdline' without the params
+                            params=$(mkecho "${cmdline% *}" | tr -d '()')
+                            cmdline="${cmdline##* }"
+                            # split multiple parameter assignments
+                            for par in $(mkecho "${params}" | tr ":" "\\n"); do 
+                                # split each assignment
+                                key="${par%=*}"
+                                value="${par#*=}"
+                                case "${key}" in
+                                    (interval)  interval="${value}" ;;
+                                    (appendage) args="-ma" ;;
+                                esac
+                            done
+                            case "${user}" in
+                                ('-')
+                                    run_cached_cmd "${args:--m}" "${descr}" "${interval:-}" "${cmdline}"
+                                ;;
+                                (*)
+                                    run_cached_cmd "${args:--m}" "${descr}" "${interval:-}" runas_user "${user}" "${cmdline}"
+                                ;;
+                            esac
+                        ;;
+                        (*)
+                            case "${user}" in
+                                ('-')
+                                    run_mrpe "${descr}" "${cmdline}"
+                                ;;
+                                (*)
+                                    run_mrpe "${descr}" runas_user "${user}" "${cmdline}"
+                                ;;
+                            esac
+                        ;;
+                    esac 
+                done
+            ;;
+            (local|plugin)
+                [ "$type" = "local" ] && mkecho "<<<local:sep(0)>>>"
+                find "$include" -executable -type f |
+                    while read -r filename; do
+                        runas_user "${user}" "${filename}"
+                    done
+            ;;
+        esac
+    done
+fi

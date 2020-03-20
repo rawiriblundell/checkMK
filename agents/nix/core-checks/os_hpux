@@ -1,0 +1,37 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+[ "${MK_OSSTR}" = "hpux" ] || exit 1
+
+# Logical Volume Manager
+mkecho '<<<hpux_lvm:sep(58)>>>'
+/sbin/vgdisplay -v -F
+
+mkecho '<<<hpux_serviceguard:sep(124)>>>'
+if inpath cmviewcl; then
+    cmviewcl -v -f line | grep summary
+fi
+
+# Kernel tunnables
+if inpath kcusage; then
+    mkecho '<<<hpux_tunables>>>'
+    kcusage -l
+fi
+
+# State of FC HBAs
+mkecho '<<<hpux_hbahealth:sep(61)>>>'
+for _hba in /dev/fcd*; do
+    mkecho "${_hba}"
+    /opt/fcms/bin/fcdutil "${_hba}" | 
+        grep -e "Driver state" \
+            -e "Topology" \
+            -e "Dump Available" \
+            -e "Code version" \
+            -e "Hardware Path" \
+            -e "Port World"
+done
+unset -v _hba

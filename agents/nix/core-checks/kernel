@@ -1,0 +1,32 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (freebsd)
+        # Performancecounter Kernel
+        mkecho "<<<kernel>>>"
+        get_epoch
+        _forks=$(sysctl -n vm.stats.vm.v_forks)
+        _vforks=$(sysctl -n vm.stats.vm.v_vforks)
+        _rforks=$(sysctl -n vm.stats.vm.v_rforks)
+        _kthreads=$(sysctl -n vm.stats.vm.v_kthreads)
+        mkecho "cpu" "$(sysctl -n kern.cp_time | awk ' { print $1" "$2" "$3" "$5" "$4 } ')"
+        mkecho "ctxt" "$(sysctl -n vm.stats.sys.v_swtch)"
+        # TO-DO: confirm that these are all ints and if so, convert to $(())
+        # shellcheck disable=SC2003
+        mkecho "processes" "$(expr "${_forks}" + "${_vforks}" + "${_rforks}" + "${_kthreads}")"
+        unset -v _forks _vforks _rforks _kthreads
+    ;;
+    (linux)
+        # Performancecounter Kernel
+        if [ -z "${MK_IS_DOCKERIZED}" ] && [ -z "${MK_IS_LXC_CONTAINER}" ]; then
+            mkecho '<<<kernel>>>'
+            get_epoch
+            cat /proc/vmstat /proc/stat
+        fi
+    ;;
+esac

@@ -1,0 +1,59 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+if inpath statgrab; then
+    case "${MK_OSSTR}" in
+        (freebsd)
+            # To install: pkg install libstatgrab
+            statgrab_vars="const. disk. general. page. proc. user."
+            statgrab_vars_mem="mem. swap."
+            statgrab_sections="proc disk page"
+
+            statgrab "$statgrab_vars" | grep -v md 1> /tmp/statgrab.$$
+            statgrab "$statgrab_vars_mem" 1>>/tmp/statgrab.$$
+
+            for s in $statgrab_sections; do
+                mkecho "<<<statgrab_$s>>>"
+                grep "^${s}\\." /tmp/statgrab.$$ | cut -d. -f2-99 | sed 's/ *= */ /'
+            done
+
+            mkecho '<<<statgrab_net>>>'
+            statgrab net. 2>&1 | cut -d. -f2-99 | sed 's/ *= */ /'
+
+            mkecho '<<<statgrab_mem>>>'
+            grep -E "^(swap|mem)\\." /tmp/statgrab.$$ | sed 's/ *= */ /'
+
+            [ -f /tmp/statgrab.$$ ] && rm -f /tmp/statgrab.$$
+        ;;
+        (solaris)
+            # source: http://www.i-scream.org/libstatgrab/
+            # binary: http://www.opencsw.org/
+            statgrab_vars="const. cpu. disk. general. mem. page. swap. user."
+            statgrab_sections="cpu disk page"
+
+            # Collect net stats in the global zone and in local zones if dlstat is present.
+            if [ "$zonename" = "global" ] || inpath dlstat >/dev/null 2>&1; then
+                statgrab_vars="$statgrab_vars net."
+                statgrab_sections="$statgrab_sections net"
+            fi
+
+            statgrab "$statgrab_vars" | grep -v md 1> /tmp/statgrab.$$
+            for s in $statgrab_sections; do
+                mkecho "<<<statgrab_$s>>>"
+                grep "^$s\\." /tmp/statgrab.$$ | cut -d. -f2-99 | sed 's/ *= */ /'
+            done
+
+            # <<<statgrab_mem>>> info is preferred over <<<solaris_mem>>>
+            # since solaris_mem is under suspicion to be buggy.
+            mkecho '<<<statgrab_mem>>>'
+            grep -E "^(swap|mem)\\." /tmp/statgrab.$$ | sed 's/ *= */ /'
+
+            [ -f /tmp/statgrab.$$ ] && rm -f /tmp/statgrab.$$
+
+        ;;
+    esac
+fi

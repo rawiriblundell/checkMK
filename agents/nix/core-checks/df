@@ -1,0 +1,109 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Print out Partitions / Filesystems. (-P gives non-wrapped POSIXed output)
+# Heads up: NFS-mounts are generally supressed to avoid agent hangs.
+# If hard NFS mounts are configured or you have too large nfs retry/timeout
+# settings, accessing those mounts from the agent would leave you with
+# thousands of agent processes and, ultimately, a dead monitored system.
+# These should generally be monitored on the NFS server, not on the clients.
+
+case "${MK_OSSTR}" in
+    (aix)
+        if [ -x /usr/opt/freeware/bin/df ] ; then
+            _df_excludefs="-x smbfs -x cifs -x iso9660 -x udf -x nfsv4 -x nfs -x mvfs -x zfs -x cdrfs"
+            # All instances of _df_excludefs in this function 
+            # are uncommented because we want word-splitting
+            # shellcheck disable=SC2086
+            /usr/opt/freeware/bin/df -PTlk ${_df_excludefs} | sed 1d
+
+            # df inodes information
+            mkecho '<<<df>>>'
+            mkecho '[df_inodes_start]'
+            # shellcheck disable=SC2086
+            /usr/opt/freeware/bin/df -PTli ${_df_excludefs} | sed 1d
+            mkecho '[df_inodes_end]'
+        else
+            df -kP | sed 's/ / - /' | grep -v ^/proc | grep -v ^Filesystem | grep -v :
+        fi
+        unset -v _df_excludefs
+    ;;
+    (freebsd)
+        mkecho '<<<df>>>'
+        # no special zfs handling so far, the ZFS.pools plugin has been tested to
+        # work on FreeBSD
+        if df -T > /dev/null ; then
+            df -kTP -t ufs | 
+                grep -Ev '(Filesystem|devfs|procfs|fdescfs|basejail)'
+        else
+            df -kP -t ufs | 
+                grep -Ev '(Filesystem|devfs|procfs|fdescfs|basejail)' | 
+                awk '{ print $1,"ufs",$2,$3,$4,$5,$6 }'
+        fi
+    ;;
+    (hpux)
+        # Filesystems. HP-UX does not provide a filesystem type. We assume
+        # modern systems with vxfs only here. The filesystem type is currently
+        # not used by the check anyway.
+        mkecho '<<<df>>>'
+        df -kP | 
+            sed 's/ / - /' | 
+            awk '/^(.*-.*)$/ { print $0 } /^([^-]+)$/ { printf $0 }' | 
+            grep -Ev "^/proc|^Filesystem|^/aha|:"
+    ;;
+    (linux)
+        if [ -n "${MK_IS_DOCKERIZED}" ]; then
+            return
+        fi
+
+        # The exclusion list is getting a bit of a problem.
+        # -l should hide any remote FS but seems to be all but working.
+        _df_excludefs="-x smbfs -x cifs -x iso9660 -x udf -x nfsv4 -x nfs -x mvfs -x prl_fs -x squashfs -x devtmpfs"
+        if [ -z "${MK_IS_LXC_CONTAINER}" ]; then
+            _df_excludefs="${_df_excludefs} -x zfs"
+        fi
+
+        mkecho '<<<df>>>'
+        # shellcheck disable=SC2086
+        df -PTlk ${_df_excludefs} | sed 1d
+
+        # df inodes information
+        mkecho '<<<df>>>'
+        mkecho '[df_inodes_start]'
+        # shellcheck disable=SC2086
+        df -PTli ${_df_excludefs} | sed 1d
+        mkecho '[df_inodes_end]'
+
+        unset -v _df_excludefs
+    ;;
+    (mac)
+        mkecho '<<<df>>>'
+        df -kPT hfs,apfs | sed 1d | \
+        while read -r _df_dev _df_rest; do
+            _df_type=$(diskutil info "${_df_dev}" | grep '^\s*Type' | cut -d: -f2 | tr -d '[:space:]')
+            mkecho "${_df_dev} ${_df_type} ${_df_rest}"
+        done
+        unset -v df_dev df_type df_rest
+    ;;
+    (netbsd|openbsd)
+        mkecho '<<<df>>>'
+        df -kPt ffs | sed -e 's/^\([^ ][^ ]*\) \(.*\)$/\1 ffs \2/' | sed 1d
+    ;;
+    (solaris)
+        # Filesystem usage for UFS and VXFS
+        mkecho '<<<df>>>'
+        for _fs in ufs vxfs samfs lofs tmpfs; do
+            df -l -k -F ${_fs} 2>/dev/null | sed 1d | grep -v "^[^ ]*/lib/[^ ]*\\.so\\.1 " | \
+            while read -r _Filesystem _kbytes _used _avail _capacity _Mountedon; do
+                _kbytes=$((_used + _avail))
+                mkecho "${_Filesystem} ${_fs} ${_kbytes} ${_used} ${_avail} ${_capacity} ${_Mountedon}"
+            done
+        done
+        unset -v _fs _Filesystem _kbytes _used _avail _capacity _Mountedon
+    ;;
+
+esac

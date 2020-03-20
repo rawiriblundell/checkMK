@@ -1,0 +1,23 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (freebsd)
+        # Check mount options.
+        # FreeBSD doesn't do remount-ro on errors, but the users might consider
+        # security related mount options more important.
+        mkecho '<<<mounts>>>'
+        mount -p -t ufs
+    ;;
+    (linux)
+        # Check mount options. Filesystems may switch to 'ro' in case
+        # of a read error.
+        mkecho '<<<mounts>>>'
+        grep ^/dev </proc/mounts | grep -v " squashfs "
+    ;;
+
+esac

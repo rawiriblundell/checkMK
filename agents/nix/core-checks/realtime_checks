@@ -1,0 +1,37 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+#TO-DO: Merge with lib/realtime_checks.sh
+
+# Load our variables for realtime data
+RTC_PLUGINS=""
+# Load our config file.  This provides RTC_TIMEOUT, RTC_PORT, RTC_SECRET and RTC_SECTIONS
+if [ -r "${MK_CONFDIR}/real_time_checks.cfg" ]; then
+    # We ensure that this file is secure
+    chmod 640 "${MK_CONFDIR}/real_time_checks.cfg" 2>/dev/null
+    
+    # shellcheck source=/dev/null
+    . "${MK_CONFDIR}/real_time_checks.cfg"
+fi
+
+# Start new liveupdate process in background on each agent execution. 
+# Starting a new live update process will terminate the old one 
+# automatically after a maximum of 1 second.
+# Validate that we're configured and equipped, otherwise return
+if [ -r "${MK_CONFDIR}/real_time_checks.cfg" ]; then
+    if [ -z "${MK_RTC_HOST}" ]; then
+        mkecho "ERROR: \${MK_RTC_HOST} not specified. Not starting Real-Time Checks." >&2
+        return
+    elif ! inpath openssl; then
+        mkecho "ERROR: openssl command is missing. Not starting Real-Time Checks." >&2
+        return
+    fi
+else
+    return
+fi
+
+run_real_time_checks >/dev/null &

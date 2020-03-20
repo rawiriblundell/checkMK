@@ -1,0 +1,135 @@
+#!/bin/sh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# TO-DO: If neither stat or perl are present, print an error and exit
+# TO-DO: Create an '--all' argument that outputs everything in a delimited format
+#        This is for the sake of improving performance i.e. a single call to this script
+
+# These functions attempt GNU 'stat', BSD 'stat' and 'perl' methods in sequence
+get_file_atime() {
+    stat -c %X "${1}" 2>/dev/null || 
+    stat -f %a "${1}" 2>/dev/null ||
+    perl -e 'if (! -f $ARGV[0]){die "0000000"};$atime=(stat($ARGV[0]))[8];print $atime."\n";' "${1}"
+}
+
+# Figure out which checksum method is available, start with sha256sum
+# If a file has a backslash or newline in it, then the hash may start with a '\'
+# This will upset the receiver of this json data as an invalid escape
+# So for all of these functions, we use 'tr' to remove any instances of '\'
+if command -v sha256sum > /dev/null 2>&1; then
+    get_file_checksum() {
+        sha256sum "${1:?No target specified}" | awk '{print $1}' | tr -d "\\\\"
+    }
+# Next we try for the digest command i.e. Solaris
+elif digest -v -a sha256 "$1" > /dev/null 2>&1; then
+    get_file_checksum() {
+        digest -v -a sha256 "${1:?No target specified}" | 
+        awk -F '= ' '{print $2}' |
+        tr -d "\\\\"
+    }
+# If digest won't play nice with sha256, try again with md5
+elif digest -v -a md5 "$1" > /dev/null 2>&1; then
+    get_file_checksum() {
+        digest -v -a md5 "${1:?No target specified}" | 
+        awk -F '= ' '{print $2}' | 
+        tr -d "\\\\"
+    }
+# 'shasum' should cater for AIX hosts, 'csum' may be worth looking at as well
+elif shasum -a 256 "$1" > /devnull 2>&1; then
+    get_file_checksum() {
+        shasum -a 256 "${1:?No target specified}" |
+        awk '{print $1}' |
+        tr -d "\\\\"
+    }
+# We can always try for md5sum as well
+elif command -v md5sum > /dev/null 2>&1; then
+    get_file_checksum() {
+        md5sum "${1:?No target specified}" |
+        awk '{print $1}' |
+        tr -d "\\\\"
+    }
+# One last try for 'cksum' which should cover more ancient Unices
+elif command -v cksum > /dev/null 2>&1; then
+    get_file_checksum() {
+        cksum "${1:?No target specified}" |
+        awk '{print $1}' |
+        tr -d "\\\\"
+    }
+fi
+
+# Note: ctime is the least portable of these metrics!
+get_file_ctime() {
+    stat -c %Z "${1}" 2>/dev/null || 
+    stat -f %c "${1}" 2>/dev/null ||
+    perl -e 'if (! -f $ARGV[0]){die "0000000"};$ctime=(stat($ARGV[0]))[10];print $ctime."\n";' "${1}"
+}
+
+get_file_gid() {
+    stat -c %g "${1}" 2>/dev/null || 
+    stat -f %g "${1}" 2>/dev/null ||
+    perl -e 'if (! -f $ARGV[0]){die "0000000"};$gid=(stat($ARGV[0]))[5];print $gid."\n";' "${1}"
+}
+
+get_file_mode_bsd() {
+    if stat -f %p "${1}" 2>/dev/null; then
+        _file_mode=$(stat -f %p "${1}")
+        # This is a builtin POSIX compatible way to print the last three string chars
+        printf -- '%s\n' "${_file_mode#"${_file_mode%???}"}"
+        unset -v _file_mode
+        return 0
+    else
+        return 1
+    fi
+}
+
+get_file_mode() {
+    stat -c %a "${1}" 2>/dev/null ||
+    get_file_mode_bsd "${1}" ||
+    perl -e 'if (! -f $ARGV[0]){die "0000000"};$mode=(stat($ARGV[0]))[2];printf "%04o\n", $mode & 07777;' "${1}"
+}
+
+get_file_mtime() {
+    stat -c %Y "${1}" 2>/dev/null || 
+    stat -f %m "${1}" 2>/dev/null ||
+    perl -e 'if (! -f $ARGV[0]){die "0000000"};$mtime=(stat($ARGV[0]))[9];print $mtime."\n";' "${1}"
+}
+
+get_file_size() {
+    stat -c %s "${1}" 2>/dev/null || 
+    stat -f %z "${1}" 2>/dev/null ||
+    perl -e 'if (! -f $ARGV[0]){die "0000000"};$mtime=(stat($ARGV[0]))[7];print $mtime."\n";' "${1}"
+}
+
+get_file_uid() {
+    stat -c %u "${1}" 2>/dev/null || 
+    stat -f %u "${1}" 2>/dev/null ||
+    perl -e 'if (! -f $ARGV[0]){die "0000000"};$uid=(stat($ARGV[0]))[4];print $uid."\n";' "${1}"
+}
+
+case "${1}" in
+    (-a|--atime)        get_file_atime "${2:?No target specified}" ;;
+    (-c|--ctime)        get_file_ctime "${2:?No target specified}" ;;
+    (-C|--checksum)     get_file_checksum "${2:?No target specified}" ;;
+    (-g|--gid)          get_file_gid "${2:?No target specified}" ;;
+    (-m|--mtime)        get_file_mtime "${2:?No target specified}" ;;
+    (-M|--mode)         get_file_mode "${2:?No target specified}" ;;
+    (-s|--size)         get_file_size "${2:?No target specified}" ;;
+    (-u|--uid)          get_file_uid "${2:?No target specified}" ;;
+    (''|*)
+        printf -- '%s\n' "Usage: get_file_info ARG FILE"
+        printf -- '\t%s\n' "Where ARG can be one of the following" \
+            "-a|--atime    Last accessed time in seconds since epoch" \
+            "-c|--ctime    File creation time in seconds since epoch (if avail)" \
+            "-C|--checksum File checksum, SHA256, MD5 or cksum." \
+            "-g|--gid      File group's GID" \
+            "-m|--mtime    Last modified time in seconds since epoch" \
+            "-M|--mode     File permissions in octal format" \
+            "-s|--size     File size in bytes" \
+            "-u|--uid      File owner's UID"
+        exit 1
+    ;;
+esac

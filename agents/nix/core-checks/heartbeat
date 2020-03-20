@@ -1,0 +1,33 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Heartbeat monitoring
+# Different handling for heartbeat clusters with and without CRM
+# for the resource state
+if [ -S /var/run/heartbeat/crm/cib_ro ] || [ -S /var/run/crm/cib_ro ] || pgrep crmd >/dev/null 2>&1; then
+    mkecho '<<<heartbeat_crm>>>'
+    TZ=UTC crm_mon -1 -r | grep -v ^$ | sed 's/^ //; /^\sResource Group:/,$ s/^\s//; s/^\s/_/g'
+fi
+if inpath cl_status; then
+    mkecho '<<<heartbeat_rscstatus>>>'
+    cl_status rscstatus
+
+    mkecho '<<<heartbeat_nodes>>>'
+    for _node in $(cl_status listnodes); do
+        if [ "${_node}" != "$(mkecho "${HOSTNAME}" | tr '[:upper:]' '[:lower:]')" ]; then
+            _status=$(cl_status nodestatus "${_node}")
+            # shellcheck disable=SC2039
+            mkecho -n "${_node} ${_status}"
+            for _link in $(cl_status listhblinks "${_node}" 2>/dev/null); do
+                # shellcheck disable=SC2039
+                mkecho -n " ${_link} $(cl_status hblinkstatus "${_node}" "${_link}")"
+            done
+            mkecho
+        fi
+    done
+    unset -v _node _status _link
+fi

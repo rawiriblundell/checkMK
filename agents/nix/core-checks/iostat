@@ -1,0 +1,35 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Skip if 'section_diskstat()' has this already covered
+if [ -r /proc/diskstats ] || [ "${MK_IS_DOCKERIZED}" ]; then
+    return 0
+fi
+# Skip if 'iostat' isn't present
+if ! inpath iostat; then
+    return 0
+fi
+
+_grepFilter="^(x?[shv]d[a-z]*[0-9]*|cciss/c[0-9]+d[0-9]+|emcpower[a-z]+|dm-[0-9]+|VxVM.*"
+_grepFilter="${_grepFilter}|mmcblk.*|dasd[a-z]*|bcache[0-9]+|nvme[0-9]+n[0-9]+|hdisk) "
+
+mkecho "<<<${MK_OSSTR}_iostat>>>"
+
+# AIX was formerly under the header '<<<aix_diskiod>>>'
+# TO-DO: Update checkman/aix_diskiod, checks/aix_diskiod etc
+# OpenBSD has a different output format, so we ringfence it for now
+# FreeBSD - we might like to consider 'gstat' and/or 'dtrace' as well
+case "${MK_OSSTR}" in
+    (openbsd)
+        iostat "${_iostatOpts:--d}" 2 1
+    ;;
+    (*)
+        iostat "${_iostatOpts:--d}" 2 1 | tr -s ' ' | grep -E "${_grepFilter}"
+    ;;
+esac
+
+unset -v _iostatOpts _grepFilter

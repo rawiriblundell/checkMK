@@ -1,0 +1,79 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Import jsonprint, which assists us with our json formatting
+. "${MK_LIBDIR:?}/jsonprint.sh"
+
+# TO-DO: Update to handle globs in configs?
+
+get_fileinfo_list() {
+    cat "${MK_CONFDIR}"/fileinfo.cfg "${MK_CONFDIR}"/fileinfo.d/* 2>/dev/null
+}
+
+# List files as defined in either $MK_CONFDIR/fileinfo.cfg or $MK_CONFDIR/fileinfo.d/*
+json_open
+    json_arr_open fileinfo
+        while read -r fsobj; do
+            json_obj_open
+            json_str name "${fsobj}"
+            if [ -f "${fsobj}" ]; then
+                json_str_append status ok
+                json_num_append size "$(get_file_info --size "${fsobj}")"
+                json_num_append uid "$(get_file_info --uid "${fsobj}")"
+                json_num_append gid "$(get_file_info --gid "${fsobj}")"
+                json_num_append mode "$(get_file_info --mode "${fsobj}")"
+                json_num_append atime "$(get_file_info --atime "${fsobj}")"
+                json_num_append mtime "$(get_file_info --mtime "${fsobj}")"
+                json_str_append checksum "$(get_file_info --checksum "${fsobj}")"
+            else
+                json_str_append status missing
+                json_num_append size null
+                json_num_append uid null
+                json_num_append gid null
+                json_num_append mode null
+                json_num_append atime null
+                json_num_append mtime null
+                json_str_append checksum null
+            fi
+            json_obj_close --comma
+        done < <(get_fileinfo_list) | json_decomma
+    json_arr_close
+    json_timestamp
+json_close
+
+# Fileinfo-Check: put patterns for files into /etc/check_mk/fileinfo.cfg
+perl -e '
+use File::Glob "bsd_glob";
+my @patterns = ();
+foreach (bsd_glob("$ARGV[0]/fileinfo.cfg"), bsd_glob("$ARGV[0]/fileinfo.d/*")) {
+    open my $handle, "<", $_ or next;
+    while (<$handle>) {
+        chomp;
+        next if /^\s*(#|$)/;
+        my $pattern = $_;
+        $pattern =~ s/\$DATE:(.*?)\$/substr(`date +"$1"`, 0, -1)/eg;
+        push @patterns, $pattern;
+    }
+    warn "error while reading $_: $!\n" if $!;
+    close $handle;
+}
+exit if ! @patterns;
+
+print "<<<fileinfo:sep(124)>>>\n", time, "\n[[[header]]]\nname|status|size|time\n[[[content]]]\n";
+
+foreach (@patterns) {
+    foreach (bsd_glob("$_")) {
+        if (! -f) {
+            print "$_|missing\n" if ! -d;
+        } elsif (my @infos = stat) {
+            print "$_|ok|$infos[7]|$infos[9]\n";
+        } else {
+            print "$_|stat failed: $!\n";
+        }
+    }
+}
+' -- "${MK_CONFDIR}"

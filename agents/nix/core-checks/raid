@@ -1,0 +1,92 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (freebsd)
+        # Soft-RAID
+        mkecho '<<<freebsd_geom_mirrors>>>'
+        gmirror status | grep -v ^Name
+    ;;
+    (linux)
+        # RAID status of Linux software RAID
+        mkecho '<<<md>>>'
+        cat /proc/mdstat
+
+        # RAID status of Linux RAID via device mapper
+        if inpath dmraid && DMSTATUS=$(waitmax 3 dmraid -r); then
+            mkecho '<<<dmraid>>>'
+
+            # Output name and status
+            waitmax 20 dmraid -s | grep -e ^name -e ^status
+
+            # Output disk names of the RAID disks
+            DISKS=$(mkecho "$DMSTATUS" | cut -f1 -d":")
+
+            for disk in $DISKS; do
+                device=$(cat /sys/block/"$(basename "$disk")"/device/model)
+                status=$(mkecho "$DMSTATUS" | grep "^${disk}")
+                mkecho "${status} Model: ${device}"
+            done
+        fi
+    ;;
+esac
+# RAID status of LSI controllers via cfggen
+if inpath cfggen; then
+    mkecho '<<<lsi>>>'
+    cfggen 0 DISPLAY |
+        grep -E '(Target ID|State|Volume ID|Status of volume)[[:space:]]*:' |
+        sed -e 's/ *//g' -e 's/:/ /'
+fi
+
+# RAID status of LSI MegaRAID controller via MegaCli. You can download that tool from:
+# http://www.lsi.com/downloads/Public/MegaRAID%20Common%20Files/8.02.16_MegaCLI.zip
+# From this list, the first that's found in PATH (if any) is mapped to lsicli()
+for cliAlt in MegaCli MegaCli64 megacli storcli storcli64; do
+    if inpath "${cliAlt}"; then
+        lsicli() { "${cliAlt}"; }
+        break
+    fi
+    unset cliAlt
+done
+
+if inpath lsicli; then
+    mkecho '<<<megaraid_pdisks>>>'
+    for part in $(lsicli -EncInfo -aALL -NoLog </dev/null |
+        sed -rn 's/:/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//; s/Number of enclosures on adapter ([0-9]+).*/adapter \1/g; /^(Enclosure|Device ID|adapter) [0-9]+$/ p'); do
+        [ "$part" = adapter ] && mkecho ""
+        # shellcheck disable=SC2039
+        [ "$part" = 'Enclosure' ] && mkecho -ne "\\ndev2enc"
+        # shellcheck disable=SC2039
+        mkecho -n " $part"
+    done
+    mkecho
+    lsicli -PDList -aALL -NoLog </dev/null |
+        grep -E 'Enclosure|Raw Size|Slot Number|Device Id|Firmware state|Inquiry|Adapter|Predictive Failure Count'
+    mkecho '<<<megaraid_ldisks>>>'
+    lsicli -LDInfo -Lall -aALL -NoLog </dev/null | grep -E 'Size|State|Number|Adapter|Virtual'
+    mkecho '<<<megaraid_bbu>>>'
+    lsicli -AdpBbuCmd -GetBbuStatus -aALL -NoLog </dev/null | grep -v Exit
+fi
+
+# RAID status of 3WARE disk controller (by Radoslaw Bak)
+if inpath tw_cli; then
+    for _tw_ctl in $(tw_cli show | awk 'NR < 4 { next } { print $1 }'); do
+        mkecho '<<<3ware_info>>>'
+        tw_cli "/${_tw_ctl}" show all | grep -E 'Model =|Firmware|Serial'
+        mkecho '<<<3ware_disks>>>'
+        tw_cli "/${_tw_ctl}" show drivestatus | grep -E 'p[0-9]' | sed "s/^/${_tw_ctl}\\//"
+        mkecho '<<<3ware_units>>>'
+        tw_cli "/${_tw_ctl}" show unitstatus | grep -E 'u[0-9]' | sed "s/^/${_tw_ctl}\\//"
+    done
+    unset -v _tw_ctl
+fi
+
+# RAID controllers from areca (Taiwan)
+# cli64 can be found at ftp://ftp.areca.com.tw/RaidCards/AP_Drivers/Linux/CLI/
+if inpath cli64; then
+    run_cached_cmd arc_raid_status 300 "cli64 rsf info | tail -n +3 | head -n -2"
+fi

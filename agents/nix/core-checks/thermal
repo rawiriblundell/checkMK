@@ -1,0 +1,29 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Gather thermal information provided e.g. by acpi
+# At the moment only supporting thermal sensors
+if [ -z "${MK_IS_DOCKERIZED}" ] && [ -z "${MK_IS_LXC_CONTAINER}" ] && ls /sys/class/thermal/thermal_zone* >/dev/null 2>&1; then
+    mkecho '<<<lnx_thermal:sep(124)>>>'
+    for _sysPath in /sys/class/thermal/thermal_zone*; do
+        _line="${_sysPath##*/}"
+        if [ ! -e "${_sysPath}/mode" ]; then 
+            _line="${_line}|-"
+        else
+            _line="${_line}|$(cat "${_sysPath}"/mode)"
+        fi
+        _line="${_line}|$(cat "${_sysPath}"/type "${_sysPath}"/temp 2>/dev/null | tr \\n "|")"
+        for _temp in "${_sysPath}"/trip_point_*_temp; do
+            _line="${_line}$(tr <"${_temp}" \\n "|")"
+        done
+        for _type in "${_sysPath}"/trip_point_*_type; do
+            _line="${_line}$(tr <"${_type}" \\n "|")"
+        done
+        mkecho "${_line%?}"
+    done
+    unset _sysPath _line _temp _type
+fi

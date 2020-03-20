@@ -1,0 +1,41 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Collect states of configured Check_MK site backup jobs
+if ls /omd/sites/*/var/check_mk/backup/*.state >/dev/null 2>&1; then
+    mkecho "<<<mkbackup>>>"
+    for _state_file in /omd/sites/*/var/check_mk/backup/*.state; do
+        _omd_site=${_state_file#/*/*/*}
+        _omd_site=${_omd_site%%/*}
+
+        _job_ident=${F%.state}
+        _job_ident=${_job_ident##*/}
+
+        if [ "${_job_ident}" != "restore" ]; then
+            mkecho "[[[site:${_omd_site}:${_job_ident}]]]"
+            cat "${_state_file}"
+            mkecho
+        fi
+    done
+    unset -v _state_file _omd_site _job_ident
+fi
+
+# Collect states of configured CMA backup jobs
+if inpath mkbackup && ls /var/lib/mkbackup/*.state >/dev/null 2>&1; then
+    mkecho "<<<mkbackup>>>"
+    for _state_file in /var/lib/mkbackup/*.state; do
+        _job_ident=${_state_file%.state}
+        _job_ident=${_job_ident##*/}
+
+        if [ "${_job_ident}" != "restore" ]; then
+            mkecho "[[[system:${_job_ident}]]]"
+            cat "$F"
+            mkecho
+        fi
+    done
+    unset -v _state_file _job_ident
+fi

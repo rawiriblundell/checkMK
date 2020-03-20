@@ -1,0 +1,56 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+[ "${MK_OSSTR}" = "aix" ] || exit 1
+
+if inpath lparstat; then
+    mkecho '<<<lparstat_aix>>>'
+    lparstat 1 1
+fi
+
+# powerHA
+if inpath lslpp; then
+    _cluster_cmd_output=$(lslpp -l cluster.es.server.rte)
+    if ! mkecho "${_cluster_cmd_output}" | grepq "not installed"; then
+        # now the following commands should be available
+        _nodes=$(cllsnode | grep "NODE" | sed -e s/NODE//g -e s/://g)
+        _list_active_nodes=""
+        for _node in ${_nodes}; do
+            _active_nodes=$(clgetactivenodes -n "${_node}")
+            if mkecho "${_active_nodes}" | grepq "${_node}"; then
+                _list_active_nodes=${_list_active_nodes}"\\n${_node}"
+            fi
+        done
+
+        if [ "${_list_active_nodes}" ]; then
+            mkecho '<<<aix_hacmp_nodes>>>'
+            # shellcheck disable=SC2039
+            mkecho -e "${_list_active_nodes}"
+            cllsnode
+        fi
+
+        mkecho '<<<aix_hacmp_services>>>'
+        if inpath clshowsrv ; then
+            waitmax 5 clshowsrv -v
+        else # fallback, hardcoded base installation path
+            waitmax 5 /usr/es/sbin/cluster/utilities/clshowsrv -v
+        fi
+
+        mkecho '<<<aix_hacmp_resources:sep(58)>>>'
+        waitmax 5 clRGinfo -s
+
+        unset -v _cluster_cmd_output _nodes _list_active_nodes _node _active_nodes
+    fi
+fi
+
+mkecho '<<<mpstat_aix>>>'
+mpstat -a | tail -n1
+
+mkecho '<<<aix_lvm>>>'
+# -L disables LVM lock for the query. Avoids blocking while LVM is
+# doing changes. For rootvg that is fine.
+lsvg -L -l rootvg

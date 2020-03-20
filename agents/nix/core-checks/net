@@ -1,0 +1,128 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (aix)
+        mkecho "<<<aix_if>>>"
+        for ent in $(ifconfig -a | grep '^en' | cut -d ":" -f 1); do
+            mkecho "[$ent]"
+            entstat "$ent" | 
+                grep -E "(^Hardware|^Bytes:|^Packets:|^Transmit|^Broadcast:|^Multicast:)"
+            entstat "$ent" | grep -p "Driver Flags:"
+        done
+    ;;
+    (hpux)
+        mkecho '<<<hpux_if>>>'
+        for nic in $(nwmgr -g | sed -n '/^lan/s/\(^[^ ]* \).*/\1/p'); do
+            nwmgr -g --st mib -c "$nic"
+        done
+    ;;
+    (linux)
+        # New variant: Information about speed and state in one section
+        if inpath ip; then
+            mkecho '<<<lnx_if>>>'
+            mkecho "[start_iplink]"
+            ip address
+            mkecho "[end_iplink]"
+        fi
+
+        mkecho '<<<lnx_if:sep(58)>>>'
+        sed 1,2d /proc/net/dev
+        sed -e 1,2d /proc/net/dev | cut -d':' -f1 | sort | while read -r eth; do
+            mkecho "[$eth]"
+            if inpath ethtool; then
+                ethtool "$eth" | grep -E '(Speed|Duplex|Link detected|Auto-negotiation):'
+            else
+                # If interface down we get "Invalid argument"
+                speed=$(cat "/sys/class/net/$eth/speed" 2>/dev/null)
+                [ -n "${speed}" ] && [ "${speed}" -ge 0 ] && mkecho -e "\tSpeed: ${speed}Mb/s\n"
+            fi
+            # shellcheck disable=SC2039
+            mkecho -e "\\tAddress: $(cat "/sys/class/net/$eth/address")\\n"
+        done
+
+        # Current state of bonding interfaces
+        if [ -e /proc/net/bonding ]; then
+            mkecho '<<<lnx_bonding:sep(58)>>>'
+            (
+                cd /proc/net/bonding || return
+                head -v -n 1000 ./*
+            )
+        fi
+
+        # Same for Open vSwitch bonding
+        if inpath ovs-appctl; then
+            BONDS=$(ovs-appctl bond/list)
+            COL=$(mkecho "$BONDS" | awk '{for(i=1;i<=NF;i++) {if($i = "bond") printf("%d", i)} exit 0}')
+            mkecho '<<<ovs_bonding:sep(58)>>>'
+            for bond in $(mkecho "$BONDS" | sed -e 1d | cut -f"${COL}"); do
+                mkecho "[$bond]"
+                ovs-appctl bond/show "$bond"
+            done
+        fi
+    ;;
+    (openbsd)
+        mkecho '<<<lnx_if:sep(58)>>>'
+        # Example line:
+        # em0     1500  <Link>      08:00:27:e6:c4:70    16358     0      254     0     0
+        netstat -in | grep '<Link>' | grep -E -v "\\*|lo|pfsync|enc" |
+            while read -r _ifName _ _ _ _pktsIn _errsIn _pktsOut _errsOut _collisions; do
+                # Make another 'netstat' call to get our extra metrics
+                # Example line:
+                # em0     1500  <Link>      08:00:27:e6:c4:70    1815571      37701
+                netstat -inb | grep "${_ifName}.*<Link>" |
+                    while read -r _ _ _ _ _bytesIn _bytesOut; do
+                        _ifData="${_ifName}:${_bytesIn} ${_pktsIn} ${_errsIn} 0 0 0 0 0 ${_bytesOut}"
+                        _ifData="${_ifData} ${_pktsOut} ${_errsOut} 0 0 ${_collisions} 0 0"
+                        mkecho "${_ifData}"
+                    done
+            done
+
+        unset -v _ifName _pktsIn _errsIn _pktsOut _errsOut _collisions _ifData
+
+        for _ifName in $(netstat -in | awk '/<Link>/{print $1}' | grep -E -v "\\*|lo|pfsync|enc"); do
+            mkecho "[${_ifName}]"
+
+            _macAddr=$(ifconfig "${_ifName}" | awk '/lladdr/{print $NF}')
+
+            # Example line:
+            # media: Ethernet autoselect (1000baseT full-duplex)
+            _ifData=$(ifconfig "${_ifName}" | grep "media:")
+
+            # Speed
+            _ifSpeed=$(mkecho "${_ifData}" | cut -d\( -f2 | cut -db -f1)
+            # shellcheck disable=SC2039
+            [ "${_ifSpeed}" ] && mkecho -e "\\tSpeed: ${_ifSpeed}Mb/s"
+
+            # Detect duplexity - in reality only available for physical devices but
+            # virtual ones like CARP devices will get at least a half duplex
+            # shellcheck disable=SC2039
+            case "${_ifData}" in
+                (*full-duplex*)  mkecho -e "\\tDuplex: Full" ;;
+                (*half-duplex*)  mkecho -e "\\tDuplex: Half" ;;
+                (*)             mkecho -e "\\tDuplex: Unknown" ;;
+            esac
+
+            # Auto-negotiation
+            # shellcheck disable=SC2039
+            case "${_ifData}" in
+                (*autoselect*)   mkecho -e "\\tAuto-negotiation: on" ;;
+                (*)             mkecho -e "\\tAuto-negotiation: off" ;;
+            esac
+
+            # Detect detected link
+            if ifconfig "${_ifName}" | grep "status:" | grepq -E "active|backup|master"; then
+                # shellcheck disable=SC2039
+                mkecho -e "\\tLink detected: yes"
+            fi
+            # shellcheck disable=SC2039
+            mkecho -e "\\tAddress: ${_macAddr}"
+        done
+
+        unset -v _ifName _ifData _ifSpeed _macAddr
+    ;;
+esac

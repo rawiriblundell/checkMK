@@ -1,0 +1,38 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Agent output snippets created by cronjobs, etc.
+# See: Werk 0016
+(
+    # Output every file in this directory. If the file is prefixed with a number,
+    # then that number is the maximum age of the file in seconds.
+    # If the file is older than that, it is ignored.
+    if cd "${MK_SPOOLDIR}" 2>/dev/null; then
+        _now=$(get_epoch)
+
+        for _file in *; do
+            [ "${_file}" = "*" ] && break
+
+            # Split any leading digits from a filename and assign to 'maxage'
+            # This should ignore further digits e.g. '600file20' will output '600'
+            _maxage="$(mkecho "${_file}" | sed 's/^[^0-9]*//;s/[^0-9].*$//')"
+
+            # If 'maxage' is set, then we grab the file's mtime, subtract it from
+            # the epoch time, and compare that to 'maxage'
+            if [ "${_maxage}" ]; then
+                _mtime=$(get_file_info --mtime "${_file}")
+                if [ $((_now - _mtime)) -gt "${_maxage}" ]; then
+                    continue
+                fi
+            fi
+
+            # Output the file
+            cat "${_file}"
+        done
+        unset -v _now _file _maxage _mtime
+    fi
+)

@@ -1,0 +1,121 @@
+# shellcheck shell=sh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# A portable alternative to exists/which/type
+pathfind() {
+    _OLDIFS="${IFS}"
+    IFS=:
+    for _dir in ${PATH}; do
+        if [ -x "${_dir}/${1:?No target specified}" ]; then
+            printf -- '%s\n' "${_dir}/${1}"
+            IFS="${_OLDIFS}"
+            unset -v _dir _OLDIFS
+            return 0
+        fi
+    done
+    IFS="${_OLDIFS}"
+    unset -v _dir _OLDIFS
+    return 1
+}
+
+# We prefer the 'timeout' command shipped with 'coreutils' v7.0 and newer
+# Our shipped 'waitmax' is statically linked and crashes on recent Ubuntu releases
+if pathfind timeout; then
+    waitmax() {
+        # The busybox version of 'timeout' requires '-t' to define the duration
+        # So if we're in busybox, we need to insert '-t' into '$*'
+        # This means that 'waitmax' invocations MUST follow a standard pattern
+        case "$(get_shell)" in
+            (*busybox*)
+                # This translates calls like 'waitmax -s 9 5 somecommand'
+                #   to instead read like 'waitmax -s 9 -t 5 somecommand'
+                # Likewise, calls like 'waitmax 5 somecommand'
+                #   are translated to look like 'waitmax -t 5 somecommand'
+                # Nb: busybox 'timeout' defaults to SIGTERM, GNU's to SIGALRM
+                case "${1}" in
+                    (-s)
+                        _signal="${2}"
+                        shift 2
+                        set -- "-s ${_signal} -t ${*}"
+                    ;;
+                    (*) set -- "-t ${*}" ;;
+                esac
+            ;;
+        esac
+        timeout "${@}"
+        unset -v _signal
+    }
+fi
+
+
+# Check if 'timeout' is available, if not, enable a stop-gap function
+if ! exists timeout; then
+  timeout() {
+    local duration
+
+    # $# should be at least 1, if not, print a usage message
+    if (( $# == 0 )); then
+      printf '%s\n' "Usage:  timeout DURATION COMMAND" ""
+      printf '\t%s\n' \
+        "Start COMMAND, and kill it if still running after DURATION." "" \
+        "DURATION is an integer with an optional suffix:" \
+        "  's'  for seconds (the default)" \
+        "  'm' for minutes" \
+        "  'h' for hours" \
+        "  'd' for days" "" \
+        "Note: This is a bash function that mimics the command 'timeout'"
+      return 0
+    fi
+    
+    # Is $1 good?  If so, sanitise and convert to seconds
+    case "${1}" in
+      (*[!0-9smhd]*|'')
+        printf '%s\n' \
+          "timeout: '${1}' is not valid.  Run 'timeout' for usage." >&2
+        return 1
+      ;;
+      (*m)
+        duration="${1//[!0-9]/}"; duration=$(( duration * 60 ))
+      ;;
+      (*h)
+        duration="${1//[!0-9]/}"; duration=$(( duration * 60 * 60 ))
+      ;;
+      (*d)
+        duration="${1//[!0-9]/}"; duration=$(( duration * 60 * 60 * 24 ))
+      ;;
+      (*)
+        duration="${1//[!0-9]/}"
+      ;;
+    esac
+    # shift so that the rest of the line is the command to execute
+    shift
+
+    # If 'perl' is available, it has a few pretty good one-line options
+    # see: http://stackoverflow.com/q/601543
+    if is_command perl; then
+      perl -e '$s = shift; $SIG{ALRM} = sub { kill INT => $p; exit 77 }; exec(@ARGV) unless $p = fork; alarm $s; waitpid $p, 0; exit ($? >> 8)' "${duration}" "$@"
+      #perl -MPOSIX -e '$SIG{ALRM} = sub { kill(SIGTERM, -$$); }; alarm shift; $exit = system @ARGV; exit(WIFEXITED($exit) ? WEXITSTATUS($exit) : WTERMSIG($exit));' "$@"
+
+    # Otherwise we offer a shell based failover.
+    # I tested a few, this one works nicely and is fairly simple
+    # http://stackoverflow.com/a/24413646
+    else
+      # Run in a subshell to avoid job control messages
+      ( "$@" &
+        child=$! # Grab the PID of the COMMAND
+        
+        # Avoid default notification in non-interactive shell for SIGTERM
+        trap -- "" SIGTERM
+        ( sleep "${duration}"
+          kill "${child}" 
+        ) 2> /dev/null &
+        
+        wait "${child}"
+      )
+    fi
+  }
+fi

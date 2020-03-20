@@ -1,0 +1,96 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Runs a command asynchronous by use of a cache file. Usage:
+# run_cached [-m|-a] NAME MAXAGE COMMAND
+#   -m mrpe-mode: stores exit code with the cache
+#   -ma mrpe-mode with age: stores exit code with the cache and adds the cache age
+#   NAME is the name of the section (also used as cache file name)
+#   MAXAGE is the maximum cache livetime in seconds
+#   A section header is automatically generated based on NAME and MAXAGE
+
+_cached_section=
+_cached_mrpe=0
+_cached_append_age=0
+
+while getopts ":ma" _cached_arg; do
+    case "${_cached_arg}" in
+        (m) _cached_mrpe=1 ;;
+        (a) _cached_append_age=1 ;;
+        (*) : ;;
+    esac
+done
+shift "$((OPTIND-1))"
+
+_cached_name="${1}"
+_cached_maxage="${2}"
+_cached_section="mkecho '<<<${_cached_name}:cached($(get_epoch),${_cached_maxage})>>>' ; "
+shift 2
+_cached_cmd="${_cached_section}${*}"
+
+# If the cache directory does not exist, create it
+[ ! -d "${MK_VARDIR}/cache" ]; mkdir -p "${MK_VARDIR}/cache"
+
+if [ "${_cached_mrpe}" = 1 ]; then
+    _cached_file="${MK_VARDIR}/cache/_mrpe_${_cached_name}.cache"
+else
+    _cached_file="${MK_VARDIR}/cache/${_cached_name}.cache"
+fi
+
+# Check if the creation of the cache takes suspiciously long and kill the
+# process if the age (access time) of $_cached_file.new is twice the _cached_maxage.
+# Output the evantually already cached section anyways and start the cache
+# update again.
+if [ -e "${_cached_file}".new ]; then
+    _cf_atime=$(get_file_info --atime "${_cached_file}".new)
+    if [ $(( $(get_epoch) - _cf_atime )) -ge $(( _cached_maxage * 2)) ]; then
+        # Kill the process still accessing that file in case
+        # it is still running. This avoids overlapping processes!
+        fuser -k -9 "${_cached_file}".new >/dev/null 2>&1
+        rm -f "${_cached_file}".new
+    fi
+fi
+
+# Check if cache file exists and is recent enough
+if [ -s "${_cached_file}" ]; then
+    _cf_mtime=$(get_file_info --mtime "${_cached_file}")
+    _cf_age=$(( $(get_epoch) - _cf_mtime ))
+    [ "${_cf_age}" -le "${_cached_maxage}" ] && _use_cachefile=1
+    # Output the file in any case, even if it is
+    # outdated. The new file will not yet be available
+    if [ "${_cached_append_age}" -eq 1 ]; then
+        # insert the cached-string before the pipe (first -e)
+        # or, if no pipe found (-e t) append it (third -e),
+        # but only once and on the second line (2!b) (first line is section header,
+        # all further lines are long output)
+        sed -e "2s/|/ (Cached: ${_cf_age}\\/${_cached_maxage}s)|/" \
+            -e t \
+            -e "2s/$/ (Cached: ${_cf_age}\\/${_cached_maxage}s)/" <"${_cached_file}"
+    else
+        _cached_info="cached(${_cf_mtime},${_cached_maxage})"
+        case "${_cached_name}" in
+            (local_*)
+                sed -e "s/^/$_cached_info /" "${_cached_file}"
+            ;;
+            (*) 
+                # insert the cache info in the section header (^= after '!'),
+                # if none is present (^= before '!')
+                sed -e '/^<<<.*\(:cached(\).*>>>/!s/^<<<\([^>]*\)>>>$/<<<\1:'"${_cached_info}"'>>>/' "${_cached_file}"
+            ;;
+        esac
+    fi
+fi
+
+# Cache file outdated and new job not yet running? Start it
+if [ -z "${_use_cachefile}" ] && [ ! -e "${_cached_file}".new ]; then
+    # When the command fails, the output is throws away ignored
+    if [ "${_cached_mrpe}" -eq 1 ]; then
+        mkecho "set -o noclobber ; exec > \"$_cached_file.new\" || exit 1 ; run_mrpe $_cached_name \"$_cached_cmd\" && mv \"$_cached_file.new\" \"$_cached_file\" || rm -f \"$_cached_file\" \"$_cached_file.new\"" | nohup /bin/bash >/dev/null 2>&1 &
+    else
+        mkecho "set -o noclobber ; exec > \"$_cached_file.new\" || exit 1 ; $_cached_cmd && mv \"$_cached_file.new\" \"$_cached_file\" || rm -f \"$_cached_file\" \"$_cached_file.new\"" | nohup /bin/bash >/dev/null 2>&1 &
+    fi
+fi

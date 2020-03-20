@@ -1,0 +1,64 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (freebsd)
+        # Network device statistics (Packets, Collisions, etc)
+        # only the "Link/Num" interface has all counters.
+        mkecho '<<<netctr>>>'
+        get_epoch
+        if [ "$(mkecho "${osver}" | cut -f1 -d\. )" -gt "8" ]; then
+            netstat -inb |
+                grep -Ev '(^Name|lo|plip)' |
+                grep Link | 
+                awk '{print $1" "$8" "$5" "$6" "$7" 0 0 0 0 "$11" "$9" "$10" 0 0 0 0 0"}'
+        else
+            # pad output for freebsd 7 and before
+            netstat -inb | 
+                grep -Ev '(^Name|lo|plip)' | 
+                grep Link | 
+                awk '{print $1" "$7" "$5" "$6" 0 0 0 0 0 "$10" "$8" "$9" 0 0 "$11" 0 0"}'
+        fi
+    ;;
+    (mac)
+        mkecho '<<<netctr>>>';
+        get_epoch
+        netstat -inb | 
+            grep -Ev '(^Name|lo|plip)' | 
+            grep Link | 
+            awk '{ print $1,$7,$5,$6,"0","0","0","0","0",$10,$8,$9,"0","0",$11,"0","0"; }'
+    ;;
+    (netbsd)
+        mkecho '<<<netctr>>>'
+        # BI= Bytes in
+        # PI= Packets in
+        # EI= Errors in
+        # EO= Errors out
+        # BO= Bytes out
+        # PO= Packets out
+        # CO= Colls
+
+        Z1=1
+        Z2=p
+
+        get_epoch
+        while [ $Z1 -lt 15 ]; do
+          BI=$( netstat -inb | grep -Ev Name | awk '/Link/{print $1" "$5}' | sed -ne $Z1$Z2 )
+          PI=$( netstat -in | grep -Ev Name | awk '/Link/{print $5}' | sed -ne $Z1$Z2 )
+          EI=$( netstat -in | grep -Ev Name | awk '/Link/{print $6}' | sed -ne $Z1$Z2 )
+          FF1="0 0 0 0 0"
+          BO=$( netstat -inb | grep -Ev Name | awk '/Link/{print $6}' | sed -ne $Z1$Z2 )
+          PO=$( netstat -in | grep -Ev Name | awk '/Link/{print $7}' | sed -ne $Z1$Z2 )
+          EO=$( netstat -in | grep -Ev Name | awk '/Link/{print $8}' | sed -ne $Z1$Z2 )
+          CO=$( netstat -in | grep -Ev Name | awk '/Link/{print $9}' | sed -ne $Z1$Z2 )
+          FF2="0 0"
+            if [ "$PI" -gt "0" ]; then
+                mkecho "$BI $PI $EI $FF1 $BO $PO $EO $FF2 $CO $FF2"
+            fi
+          Z1=$((Z1+1))
+        done
+esac

@@ -1,0 +1,19 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Veritas Cluster Server
+# Software is always installed in /opt/VRTSvcs.
+# Secure mode must be off to allow root to execute commands
+if [ -x /opt/VRTSvcs/bin/haclus ]; then
+    mkecho "<<<veritas_vcs>>>"
+    vcshost=$(hostname | cut -d. -f1)
+    waitmax -s 9 2 /opt/VRTSvcs/bin/haclus -display -localclus | grep -e ClusterName -e ClusState
+    waitmax -s 9 2 /opt/VRTSvcs/bin/hasys -display -attribute SysState
+    waitmax -s 9 2 /opt/VRTSvcs/bin/hagrp -display -sys "$vcshost" -attribute State -localclus
+    waitmax -s 9 2 /opt/VRTSvcs/bin/hares -display -sys "$vcshost" -attribute State -localclus
+    waitmax -s 9 2 /opt/VRTSvcs/bin/hagrp -display -attribute TFrozen -attribute Frozen
+fi

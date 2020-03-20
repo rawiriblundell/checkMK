@@ -1,0 +1,20 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# OpenVPN Clients.  These are our two known log locations.
+# The 'sed' invocation may need to be tested on non-linux
+if [ -e /etc/openvpn/openvpn-status.log ]; then
+    _openvpn_logfile='/etc/openvpn/openvpn-status.log'
+elif [ -e /var/log/openvpn/openvpn-status.log ]; then
+    _openvpn_logfile='/var/log/openvpn/openvpn-status.log'
+else
+    return 0
+fi
+
+mkecho '<<<openvpn_clients:sep(44)>>>'
+sed -n -e '/CLIENT LIST/,/ROUTING TABLE/p' < "${_openvpn_logfile}" |
+    sed -e 1,3d -e '$d'

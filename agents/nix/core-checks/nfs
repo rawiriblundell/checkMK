@@ -1,0 +1,51 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Function to list CIFS mounts for use by section_nfs
+get_cifs_mounts() {
+    if [ -r /proc/mounts ]; then
+        sed -n '/ cifs\? /s/[^ ]* \([^ ]*\) .*/\1/p' < /proc/mounts | sed 's/\\040/ /g'
+    else
+        mount | awk '/ cifs/{print $3;}'
+    fi
+}
+
+# Function to list NFS mounts for use by section_nfs
+get_nfs_mounts() {
+    if [ -r /proc/mounts ]; then
+        sed -n '/ nfs4\? /s/[^ ]* \([^ ]*\) .*/\1/p' < /proc/mounts | sed 's/\\040/ /g'
+    else
+        mount | awk '/ nfs/{print $3;}'
+    fi
+}
+
+# Check NFS mounts by accessing them with stat -f (System call statfs()). 
+# If this lasts more then 2 seconds we consider it as hanging. We need waitmax.
+if inpath waitmax; then
+    case "${MK_OSSTR}" in
+        (aix)   statFmt="ok - - - -" ;;
+        (linux) statFmt="ok %b %f %a %s" ;;
+    esac
+    mkecho '<<<nfsmounts>>>'
+    get_nfs_mounts | while read -r mountPoint; do
+        waitmax -s 9 5 stat -f -c "${mountPoint} ${statFmt}" "${mountPoint}" \
+        || mkecho "${mountPoint} hanging 0 0 0 0"
+    done
+
+    mkecho '<<<cifsmounts>>>'
+    get_cifs_mounts | while read -r mountPoint; do
+        if [ ! -r "${mountPoint}" ]; then
+            mkecho "${mountPoint} Permission denied"
+        else
+            waitmax -s 9 2 stat -f -c "${mountPoint} ${statFmt}" "${mountPoint}" \
+                || mkecho "${mountPoint} hanging 0 0 0 0"
+        fi
+    done
+fi
+
+# Clean up our function variables
+unset mountPoint statFmt

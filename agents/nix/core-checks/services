@@ -1,0 +1,39 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (linux)
+        if inpath systemctl; then
+            mkecho '<<<systemd_units>>>'
+            mkecho "[list-unit-files]"
+            systemctl list-unit-files --no-pager
+            mkecho "[all]"
+            systemctl --all --no-pager | sed '/^$/q'
+        fi
+
+        # Next we check for 'chkconfig'
+        if inpath chkconfig; then
+            mkecho '<<<chkconfig>>>'
+            chkconfig --list 2>&1
+        fi
+
+        # Some debian hosts have sysv-rc-conf
+        if inpath sysv-rc-conf; then
+            mkecho '<<<sysv-rc-conf>>>'
+            sysv-rc-conf
+        fi
+    ;;
+    (solaris)
+        # Getting Information About Services Running on Solaris
+        # We can get a list of all service instances, including disabled
+        # or incomplete ones by 'svcs -a'
+        if inpath svcs; then
+            mkecho '<<<solaris_services>>>'
+            svcs -a
+        fi
+    ;;
+esac

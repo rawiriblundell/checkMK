@@ -1,0 +1,70 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+if [ "${MK_OSSTR}" = "linux" ]||[ "${MK_OSSTR}" = "solaris" ]; then
+    # Filesystem usage for ZFS
+    if inpath zfs; then
+        mkecho '<<<zfsget:sep(9)>>>'
+        zfs get -t filesystem,volume -Hp name,quota,used,avail,mountpoint,type || \
+            zfs get -Hp name,referenced,avail,mountpoint,type | sed 's/referenced/used/g'
+        mkecho '<<<zfsget>>>'
+        mkecho '[df]'
+        df -PTlk -t zfs | sed 1d
+    fi
+fi
+
+if [ "${MK_OSSTR}" = "linux" ]; then
+    # Welcome the ZFS check on Linux
+    # We do not endorse running ZFS on linux if your vendor doesnt support it ;)
+    # check zpool status
+    if inpath zpool; then
+        mkecho "<<<zpool_status>>>"
+        zpool status -x
+        mkecho "<<<zpool>>>"
+        zpool list
+    fi
+fi
+
+if [ "${MK_OSSTR}" = "freebsd" ]; then
+    # Filesystem usage for ZFS
+    if inpath zfs; then
+        mkecho '<<<zfsget>>>'
+        zfs get -t filesystem,volume -Hp name,quota,used,avail,mountpoint,type || \
+          zfs get -Hp name,quota,used,avail,mountpoint,type
+        mkecho '[df]'
+        df -kP -t zfs | sed 1d
+        # arc stats for zfs_arc_cache
+        mkecho '<<<zfs_arc_cache>>>'
+        sysctl -q kstat.zfs.misc.arcstats |  sed -e 's/kstat.zfs.misc.arcstats.//g' -e 's/: / = /g'
+    fi
+
+    # check zpool status
+    if [ -x /sbin/zpool ]; then
+        mkecho "<<<zpool_status>>>"
+        /sbin/zpool status -x | grep -v "errors: No known data errors"
+    fi
+fi
+
+if [ "${MK_OSSTR}" = "solaris" ]; then
+    # ZFS arc cache
+    # newer Solaris (>=11.3) do not provide hits and misses via mdb -k
+    mkecho '<<<zfs_arc_cache>>>'
+    if inpath kstat; then
+        kstat -p zfs:0:arcstats | 
+            sed -e 's/.*arcstats://g' | 
+            awk '{printf "%s = %s\n", $1, $2;}'
+    elif inpath; then
+        mkecho '::arc' | mdb -k
+    fi
+
+    # zpool status
+    if [ -x /sbin/zpool ]; then
+        run_cached_cmd zpool_status 120 "/sbin/zpool status -x"
+        mkecho '<<<zpool>>>'
+        zpool list
+    fi
+fi

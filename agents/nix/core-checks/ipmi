@@ -1,0 +1,75 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+read_ipmi_sensors() {
+    for _class in Temperature Power_Unit Fan; do
+        ipmi-sensors "${1:?No format given}" \
+            --sdr-cache-directory /var/cache "${2:?No group opt given}" "${_class}" | 
+            sed -e 's/ /_/g' -e 's/:_\\?/ /g' -e 's@ \\([^(]*\\)_(\\([^)]*\\))@ \\2_\\1@'
+        # In case of a timeout immediately leave loop.
+        [ $? = 255 ] && break
+    done
+    unset -v _class
+}
+
+# Function to format the output of 'ipmitool'
+read_ipmitool() {
+    if ! inpath ipmitool; then
+        return 1
+    fi
+    case "${MK_OSSTR}" in
+        (linux)
+            ipmitool sensor list |
+                grep -v 'command failed' | 
+                grep -E -v '^[^ ]+ na ' | 
+                grep -v ' discrete '
+        ;;
+        (*bsd)
+            # IPMI-Data (Fans, CPU, temperature, etc)
+            # needs the sysutils/ipmitool and kldload ipmi.ko
+            ipmitool sensor list |
+                grep -v 'command failed' |
+                sed -e 's/ *| */|/g' -e "s/ /_/g" -e 's/_*$//' -e 's/|/ /g' |
+                grep -Ev '^[^ ]+ na ' |
+                grep -v ' discrete '
+        ;;
+    esac
+}
+
+# This function pairs with read_ipmitool()
+# TO-DO: merge them somehow?
+section_ipmi() {
+    # Hardware sensors via IPMI (need ipmitool)
+    if inpath ipmitool; then
+        # We denote our delimiter 'i.e. separator' as being at column 124
+        run_cached_cmd "ipmi:sep(124)" 300 "waitmax 300 read_ipmitool"
+        # readable discrete sensor states
+        run_cached_cmd "ipmi_discrete:sep(124)" 300 "waitmax 300 ipmitool sdr elist compact"
+    fi
+    # IPMI data via ipmi-sensors (of freeipmi). Please make sure, that if you
+    # have installed freeipmi that IPMI is really support by your hardware.
+    if (inpath ipmi-sensors && ls /dev/ipmi*) >/dev/null 2>&1; then
+        mkecho '<<<ipmi_sensors>>>'
+        # Newer ipmi-sensors version have new output format; Legacy format can be used
+        if ipmi-sensors --help | grepq legacy-output; then
+            _ipmi_format="--legacy-output"
+        else
+            _ipmi_format=""
+        fi
+        if ipmi-sensors --help | grepq " \\-\\-groups"; then
+            _ipmi_group_opt="-g"
+        else
+            _ipmi_group_opt="-t"
+        fi
+
+        # At least with ipmi-sensors 0.7.16 this group is Power_Unit instead of "Power Unit"
+        run_cached_cmd ipmi_sensors 300 "read_ipmi_sensors ${_ipmi_format} ${_ipmi_group_opt}"
+        unset -v _ipmi_format _ipmi_group_opt
+    fi
+}
+
+section_ipmi

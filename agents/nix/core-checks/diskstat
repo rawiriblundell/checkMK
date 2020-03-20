@@ -1,0 +1,38 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Performancecounter Platten
+if [ -z "${MK_IS_DOCKERIZED}" ]&&[ -r "/proc/diskstats" ]; then
+    mkecho '<<<diskstat>>>'
+    get_epoch
+    _grepFilter=" (x?[shv]d[a-z]*[0-9]*|cciss/c[0-9]+d[0-9]+|emcpower[a-z]+|dm-[0-9]+"
+    _grepFilter="${_grepFilter}|VxVM.*|mmcblk.*|dasd[a-z]*|bcache[0-9]+|nvme[0-9]+n[0-9]+) "
+    grep -E "${_grepFilter}" </proc/diskstats
+    if inpath dmsetup; then
+        mkecho '[dmsetup_info]'
+        dmsetup info -c --noheadings --separator ' ' -o name,devno,vg_name,lv_name
+    fi
+    if [ -d /dev/vx/dsk ]; then
+        mkecho '[vx_dsk]'
+        stat -c "%t %T %n" /dev/vx/dsk/*/*
+    fi
+    unset -v _grepFilter
+elif [ -n "${MK_IS_DOCKERIZED}" ]; then
+    mkecho '<<<docker_container_diskstat>>>'
+    mkecho "[time]"
+    get_epoch
+    for _ioFile in io_service_bytes io_serviced; do
+        mkecho "[${_ioFile}]"
+        cat "/sys/fs/cgroup/blkio/blkio.throttle.${_ioFile}"
+    done
+    mkecho "[names]"
+    for _ioFile in /sys/block/*; do
+        # shellcheck disable=SC2039
+        mkecho "${_ioFile##*/} $(cat "${_ioFile}/dev")"
+    done
+    unset -v _ioFile
+fi

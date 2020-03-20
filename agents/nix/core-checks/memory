@@ -1,0 +1,85 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# TO-DO: Standardise section headers
+# We ignore the shellcheck alerts for 'mkecho -n' as our 'mkecho()' solves this
+# shellcheck disable=SC2039
+
+case "${MK_OSSTR}" in
+    (aix)
+        mkecho '<<<aix_memory>>>'
+        vmstat -v  | tr -s ' '
+        swap -s
+        # TO-DO: Possible candidates?
+        # lsattr -El sys0 -a realmem
+        # lsps -s
+        # lsps -a
+    ;;
+    (hpux)
+        mkecho '<<<hpux_mem>>>'
+        machinfo | grep ^Memory
+        vmstat | sed -n 3p
+
+    ;;
+    (linux)
+        if [ -z "${MK_IS_DOCKERIZED}" ]; then
+            mkecho '<<<mem>>>'
+            grep -E -v '^Swap:|^Mem:|total:' </proc/meminfo
+        else
+            mkecho '<<<docker_container_mem>>>'
+            cat /sys/fs/cgroup/memory/memory.stat
+            mkecho "usage_in_bytes $(cat /sys/fs/cgroup/memory/memory.usage_in_bytes)"
+            mkecho "limit_in_bytes $(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)"
+            grep -F 'MemTotal:' /proc/meminfo
+        fi
+    ;;
+    (mac)
+        _memFreeSpec=$(vm_stat | grep speculative: | awk '{print $3}')
+        _memFreeInactive=$(vm_stat | grep inactive: | awk '{print $3}')
+        _memFree=$(vm_stat | grep free: | awk '{print $3}')
+        _memFreeMach=$(vm_stat | grep Mach | awk '{print $8}')
+        mkecho '<<<mem>>>'
+        mkecho "MemTotal: $(mkecho "$(sysctl -n hw.memsize)/1024" | bc) kB"
+        mkecho "MemFree: $(mkecho "( ${_memFreeSpec} + ${_memFreeInactive} + ${_memFree} ) * ${_memFreeMach} / 1024" | bc) kB"
+        mkecho "SwapTotal: 0 kB"
+        mkecho "SwapFree: 0 kB"
+        # FIXME: Just call vm_stat here, write a check plugin that uses that
+        # native output of vm_stat
+    ;;
+    (openbsd)
+        mkecho "<<<mem>>>"
+        MEM_FREE=$(vmstat | tail -n1 | awk '{ print $5 }')
+        MEM_TOTAL=$(sysctl hw.usermem | cut -d= -f2)
+        MEM_TOTAL=$(mkecho "$MEM_TOTAL/1024" | bc)
+
+        SWAPCTL_OUTPUT=$(swapctl -k -s)
+        SWAP_FREE=$(mkecho "$SWAPCTL_OUTPUT" | awk '{ print $7 }')
+        SWAP_TOTAL=$(mkecho "$SWAPCTL_OUTPUT" | awk '{ print $2 }')
+
+        # if there is no swap space swap values are 0
+        if [ -z "$SWAPCTL_OUTPUT" ]; then
+            SWAP_FREE=0
+            SWAP_TOTAL=0
+        fi
+
+        mkecho -e "MemTotal:\\t$MEM_TOTAL kB"
+        mkecho -e "MemFree:\\t$MEM_FREE kB"
+        mkecho -e "SwapTotal:\\t$SWAP_TOTAL kB"
+        mkecho -e "SwapFree:\\t$SWAP_FREE kB"
+    ;;
+    (solaris)
+        # We prefer to use 'statgrab' if it's available.  See section_statgrab()
+        # If 'statgrab' isn't available, we offer this workaround
+        if ! inpath statgrab; then
+            if [ -x /usr/bin/top ] || [ -x /usr/local/bin/top ]; then
+                mkecho "<<<solaris_mem>>>"
+                if [ -x /usr/bin/top ]; then /usr/bin/top | grep '^Memory:'; fi
+                if [ -x /usr/local/bin/top ]; then /usr/local/bin/top | grep '^Memory:'; fi
+            fi
+        fi
+    ;;
+esac

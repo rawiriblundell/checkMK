@@ -1,0 +1,79 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (aix)
+        # CPU output of Linux agent simulated (thanks to Cameron Pierce)
+        mkecho '<<<cpu>>>'
+        _load=$(uptime|sed -e 's;.*average: \([[:digit:]]\{1,\}\.[[:digit:]]\{1,\}\), \([[:digit:]]\{1,\}\.[[:digit:]]\{1,\}\), \([[:digit:]]\{1,\}\.[[:digit:]]\{1,\}\);\1 \2 \3;')
+        _ps=$(ps -eo thcount | awk '{SUM+=$1} END {print SUM}')
+        _procs=$(vmstat|grep lcpu|sed -e 's;.*lcpu=\([[:digit:]]\{1,4\}\).*;\1;')
+        mkecho "${_load} 1/${_ps} $$ ${_procs}"
+        unset -v _load _ps _procs
+    ;;
+    (freebsd)
+        mkecho '<<<cpu>>>'
+        sysctl -n vm.loadavg | tr -d '{}'
+        top -b -n 1 | grep -E '^[0-9]+ processes' | awk '{print $3"/"$1}'
+        sysctl -n kern.lastpid
+        sysctl -n hw.ncpu
+    ;;
+    (hpux)
+        mkecho '<<<hpux_cpu>>>'
+        uptime
+        # machinfo is unsupported addon thus not in $PATH
+        /usr/contrib/bin/machinfo | grep -E 'logical proc|core' | tail -1
+    ;;
+    (linux)
+        if [ "$(uname -m)" = "armv7l" ]; then
+            _cpu_regex='^processor'
+        else
+            _cpu_regex='^CPU|^processor'
+        fi
+        _num_cpus=$(grep -c -E ${_cpu_regex} </proc/cpuinfo)
+
+        if [ -z "${MK_IS_DOCKERIZED}" ] && [ -z "${MK_IS_LXC_CONTAINER}" ]; then
+            mkecho '<<<cpu>>>'
+            mkecho "$(cat /proc/loadavg) $_num_cpus"
+            if [ -f "/proc/sys/kernel/threads-max" ]; then
+                cat /proc/sys/kernel/threads-max
+            fi
+        else
+            if [ -n "${MK_IS_DOCKERIZED}" ]; then
+                mkecho '<<<docker_container_cpu>>>'
+            else
+                mkecho '<<<lxc_container_cpu>>>'
+            fi
+            grep "^cpu " /proc/stat
+            mkecho "num_cpus ${_num_cpus}"
+            cat /sys/fs/cgroup/cpuacct/cpuacct.stat
+        fi
+        unset -v _cpu_regex _num_cpu
+    ;;
+    (mac)
+        mkecho '<<<cpu>>>'
+        sysctl -n vm.loadavg | tr -d '{}'
+        top -l 1 -n 1 | grep -E '^Processes:' | awk '{$4"/"$2;}'
+        mkecho 'mkecho $$' | bash
+        sysctl -n hw.ncpu
+    ;;
+    (netbsd|openbsd)
+        mkecho '<<<cpu>>>'
+        sysctl -n vm.loadavg | tr -d '{}'
+        top -b -n 1 | grep -E '^[0-9]+ processes' | awk '{print $3"/"$1}'
+        sysctl -n hw.ncpu
+    ;;
+    (solaris)
+        # Simulated Output of Linux /proc/cpu
+        mkecho '<<<cpu>>>'
+        _load=$(uptime|sed -e 's;.*average: \([0-9]\{1,\}\.[0-9]\{1,\}\), \([0-9]\{1,\}\.[0-9]\{1,\}\), \([0-9]\{1,\}\.[0-9]\{1,\}\).*;\1 \2 \3;')
+        _nthreads=$(($(ps -AL | wc -l)))
+        _procs=$(($(psrinfo | wc -l)))
+        mkecho "${_load} 1/${_nthreads} $$ ${_procs}"
+        unset -v _load _nthreads _procs
+    ;;
+esac

@@ -1,0 +1,14 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Proxmox Cluster
+if inpath pvecm; then
+    mkecho "<<<pvecm_status:sep(58)>>>"
+    pvecm status
+    mkecho "<<<pvecm_nodes>>>"
+    pvecm nodes
+fi

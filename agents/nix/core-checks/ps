@@ -1,0 +1,87 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (aix)
+        mkecho '<<<ps>>>'
+        ps -ef -F user,vszsize,rssize,pcpu,etime,pid,args | 
+            sed -e 1d -e 's/ *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) */(\1,\2,\3,\4\/\5,\6) /'
+    ;;
+    (freebsd)
+        # processes including username, without kernel processes
+        mkecho '<<<ps>>>'
+        COLUMNS=10000
+        if [ "$is_jailed" = "0" ]; then
+            ps ax -o state,user,vsz,rss,pcpu,command | 
+                sed -e 1d  -e '/\([^ ]*J\) */d' -e 's/ *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) */(\2,\3,\4,\5) /'
+        else
+            ps ax -o user,vsz,rss,pcpu,command | 
+                sed -e 1d -e 's/ *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) */(\1,\2,\3,\4) /'
+        fi
+    ;;
+    (hpux)
+        # Process table: HP-UX does not provide a resident size of processes.
+        # We send a 0 here for RSZ.
+        mkecho '<<<ps>>>'
+        UNIX95=yes ps -ef -o user,vsz,pcpu,args | 
+            sed -e 1d -e 's/ *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) */(\1,\2,0,\3) /'
+    ;;
+    (linux)
+        if inpath ps; then
+            # processes including username, without kernel processes
+            mkecho '<<<ps>>>'
+            mkecho 'dummy section -- refer to section ps_lnx'
+            mkecho '<<<ps_lnx>>>'
+            CGROUP=""
+            if [ -e /sys/fs/cgroup ]; then
+                CGROUP="cgroup:512,"
+            fi
+            # shellcheck disable=SC2039
+            mkecho "[header] $(ps ax -o "$CGROUP"user:32,vsz,rss,cputime,etime,pid,command --columns 10000)"
+        fi
+    ;;
+    (mac|netbsd|openbsd)
+        mkecho '<<<ps>>>'
+        COLUMNS=10000
+        ps ax -o user,vsz,rss,pcpu,command | 
+            sed -e 1d -e 's/ *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) */(\1,\2,\3,\4) /'
+    ;;
+    (solaris)
+        mkecho '<<<ps>>>'
+        # The default solaris ps command strips the command lines of the processes. But for good process
+        # matching on the server we really need to whole command line. On linux there are arguments to
+        # make ps output the whole command line, but on solaris this seems to be missing. We use the ucb
+        # ps command to get the full command line instead. What a hack.
+        if [ -x /usr/ucb/ps ]; then
+            UCB_PS=$(/usr/ucb/ps -agwwwx)
+            ps -o user,vsz,rss,pcpu,etime,pid,args "${pszone}" |
+                sed -e 1d -e 's/ *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) */(\1,\2,\3,\4\/\5,\6) /' |
+                while read -r LINE; do
+                    STATS=${LINE%) *}
+                    PID=${STATS##*,}
+
+                    # Directly use ps output when line is too slow to be stripped
+                    if [ ${#LINE} -lt 100 ]; then
+                        mkecho "$LINE"
+                        continue
+                    fi
+
+                    CMD=$(mkecho "$UCB_PS" | grep "^[ ]*$PID " | head -n1 | \
+                        awk '{ s = ""; for (i = 5; i <= NF; i++) s = s $i " "; print s }')
+                    # Only use the ucb ps line when it's not empty (process might already been gone)
+                    if [ -z "$CMD" ]; then
+                        mkecho "$LINE"
+                    else
+                        mkecho "${STATS}) ${CMD}"
+                    fi
+                done
+        else
+            ps -o user,vsz,rss,pcpu,etime,pidargs "${pszone}" |
+                sed -e 1d -e 's/ *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) */(\1,\2,\3,\4\/\5,\6) /'
+        fi
+    ;;
+esac

@@ -1,0 +1,121 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+#TO-DO: De-duplicate this mess
+# Postfix mailqueue monitoring
+# Determine the number of mails and their size in several postfix mail queues
+read_postfix_queue_dirs() {
+    _postfix_queue_dir="${1}"
+    if [ -n "${_postfix_queue_dir}" ]; then
+        mkecho '<<<postfix_mailq>>>'
+        mkecho "[[[${2}]]]"
+
+        for _queue in deferred active; do
+            _count=$(find "${_postfix_queue_dir}/${_queue}" -type f | wc -l)
+            _size=$(du -s "${_postfix_queue_dir}/${_queue}" | awk '{print $1 }')
+            if [ -z "${_count}" ]; then
+                mkecho "Mail queue is empty"
+            else
+                mkecho "QUEUE_${_queue} ${_size:-0} ${_count}"
+            fi
+        done
+    fi
+    unset -v _postfix_queue_dir _queue _count _size
+}
+
+# Postfix mailqueue monitoring
+# Determine the number of mails and their size in several postfix mail queues
+if inpath postconf; then
+    case "${MK_OSSTR}" in
+        (freebsd)
+            # Only handle mailq when postfix user is present. The mailq command is also
+            # available when postfix is not installed. But it produces different outputs
+            # which are not handled by the check at the moment. So try to filter out the
+            # systems not using postfix by searching for the postfix user.
+            #
+            # Cannot take the whole outout. This could produce several MB of agent output
+            # on blocking queues.
+            # Only handle the last 6 lines (includes the summary line at the bottom and
+            # the last message in the queue. The last message is not used at the moment
+            # but it could be used to get the timestamp of the last message.
+            mkecho '<<<postfix_mailq>>>'
+            postfix_queue_dir=$(postconf -h queue_directory)
+            postfix_count=$(find "$postfix_queue_dir"/deferred -type f | wc -l)
+            postfix_size=$(du -ks "$postfix_queue_dir"/deferred | awk '{print $1 }')
+            if [ "$postfix_count" -gt 0 ]; then
+                mkecho "$postfix_size" Kbytes in "$postfix_count" Requests.
+            else
+                mkecho Mail queue is empty
+            fi
+        ;;
+        (linux)
+            # Check if multi_instance_directories exists in main.cf and is not empty
+            # always takes the last entry, multiple entries possible
+            multi_instances_dirs=$(postconf -c /etc/postfix 2>/dev/null | grep ^multi_instance_directories | sed 's/.*=[[:space:]]*//g')
+            if [ -n "$multi_instances_dirs" ]; then
+                for queue_dir in $multi_instances_dirs; do
+                    if [ -n "$queue_dir" ]; then
+                        postfix_queue_dir=$(postconf -c "$queue_dir" 2>/dev/null | grep ^queue_directory | sed 's/.*=[[:space:]]*//g')
+                        read_postfix_queue_dirs "$postfix_queue_dir" "$queue_dir"
+                    fi
+                done
+            fi
+            # Always check for the default queue. It can exist even if multiple instances are configured
+            read_postfix_queue_dirs "$(postconf -h queue_directory 2>/dev/null)"
+        ;;
+    esac
+
+elif [ -x /usr/sbin/ssmtp ]; then
+    mkecho '<<<postfix_mailq>>>'
+    mailq 2>&1 | sed 's/^[^:]*: \(.*\)/\1/' | tail -n 6
+
+# *bsd but should be a reasonable generic fallback
+elif inpath mailq && getent passwd postfix >/dev/null 2>&1; then
+    mkecho '<<<postfix_mailq>>>'
+    mailq | tail -n 6
+fi
+
+# From AIX, seems generic enough
+if [ -x /usr/sbin/sendmail ] ; then
+    mkecho '<<<postfix_mailq>>>';
+    mailq 2>&1 | tail -n 6
+fi
+
+# Postfix status monitoring. Can handle multiple instances.
+if inpath postfix; then
+    mkecho "<<<postfix_mailq_status:sep(58)>>>"
+    for i in /var/spool/postfix*/; do
+        if [ -e "$i/pid/master.pid" ]; then
+            if [ -r "$i/pid/master.pid" ]; then
+                postfix_pid=$(sed 's/ //g' <"$i/pid/master.pid") # handle possible spaces in output
+                if readlink -- "/proc/${postfix_pid}/exe" | grepq ".*postfix/\\(s\\?bin/\\)\\?master.*"; then
+                    mkecho "$i:the Postfix mail system is running:PID:$postfix_pid" | sed 's/\/var\/spool\///g'
+                else
+                    mkecho "$i:PID file exists but instance is not running!" | sed 's/\/var\/spool\///g'
+                fi
+            else
+                mkecho "$i:PID file exists but is not readable"
+            fi
+        else
+            mkecho "$i:the Postfix mail system is not running" | sed 's/\/var\/spool\///g'
+        fi
+    done
+fi
+
+# Check status of qmail mailqueue
+if inpath qmail-qstat; then
+    mkecho "<<<qmail_stats>>>"
+    qmail-qstat
+fi
+
+# Nullmailer queue monitoring
+if inpath nullmailer-send && [ -d /var/spool/nullmailer/queue ]; then
+    mkecho '<<<nullmailer_mailq>>>'
+    COUNT=$(find /var/spool/nullmailer/queue -type f | wc -l)
+    SIZE=$(du -s /var/spool/nullmailer/queue | awk '{print $1 }')
+    mkecho "$SIZE $COUNT"
+fi

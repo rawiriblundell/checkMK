@@ -1,0 +1,47 @@
+# shellcheck shell=ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+case "${MK_OSSTR}" in
+    (aix)
+        # TO-DO: Consider merging in mpio_get_config, lsmpio, sanlun, 
+        # dlnkmgr, powermt and pcmpath handling
+        mkecho '<<<aix_multipath>>>'
+        lspath -F"name parent status"
+    ;;
+    (freebsd)
+        # Multipathing is supported in FreeBSD by now
+        # http://www.mywushublog.com/2010/06/freebsd-and-multipath/
+        if kldstat -v | grep g_multipath > /dev/null ; then
+            mkecho '<<<freebsd_multipath>>>'
+            gmultipath status | grep -v ^Name
+        fi
+    ;;
+    (hpux)
+        # Multipathing
+        mkecho '<<<hpux_multipath>>>'
+        scsimgr lun_map | grep -E '^[[:space:]]*(LUN PATH|State|World Wide Identifier)'
+    ;;
+    (linux)
+        if inpath multipath; then
+            if [ -f /etc/multipath.conf ]; then
+                mkecho '<<<multipath>>>'
+                multipath -l
+            fi
+        fi
+    ;;
+    (solaris)
+        if inpath mpathadm; then
+            if [ "$zonename" = "global" ]; then
+                mkecho '<<<solaris_multipath>>>'
+                mpathadm list LU | 
+                    nawk '{if(NR%3==1){dev=$1}
+                            if(NR%3==2){tc=$NF}
+                            if(NR%3==0){printf "%s %s %s\n",dev,tc,$NF}}'
+            fi
+        fi
+    ;;
+esac

@@ -1,0 +1,101 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Remove locale settings to eliminate localized outputs where possible
+# The locale logic here is used to make the Python encoding detection
+# work (see CMK-2778).
+MK_LOCALE=$(locale -a |grep -E '^C$|^C.UTF-8$|^c.utf8$' | head -n 1)
+if [ -z "${MK_LOCALE}" ]; then
+    LC_ALL="${MK_LOCALE}"
+    export LC_ALL
+fi
+unset LANG
+
+# Close standard input (for security reasons) and stderr when not explicitly in debug mode.
+# When the nodes agent is executed by a e.g. docker node in a container,
+# then don't close stdin, because the agent is piped through it in this case.
+if [ "${1}" = -d ]; then
+    set -xv
+# TO-DO: Review the validity/use of MK_FROM_NODE, it seems to be superseded now
+elif [ -z "${MK_FROM_NODE}" ]; then
+    exec </dev/null 2>/dev/null
+fi
+
+# Temporarily set MK_LIBDIR.  setup_env_vars will re-set this.
+MK_LIBDIR="../lib"
+
+# Because _some_ of these need to be loaded in order, we load them _all_ in order
+. "${MK_LIBDIR}/setup_path.sh" || exit 1         # Define the PATH
+. "${MK_LIBDIR}/common_functions.sh" || exit 1   # Load our common functions
+. "${MK_LIBDIR}/setup_env_vars.sh" || exit 1     # Setup our basic ENV vars
+. "${MK_LIBDIR}/realtime_checks.sh" || exit 1    # Load realtime check functions
+. "${MK_LIBDIR}/protect_output.sh" || exit 1     # Load this function for encrypting output
+. "${MK_LIBDIR}/ssl_certificates.sh" || exit 1   # Add functions for analysing ssl certs
+. "${MK_LIBDIR}/jsonprint.sh" || exit 1          # Import jsonprint, which assists us with our json formatting
+# Setup any OS specific vars and customisations
+[ -r "${MK_LIBDIR}/setup_${MK_OSSTR}.sh" ] && . "${MK_LIBDIR}/setup_${MK_OSSTR}.sh"
+
+####################################################################################################
+
+main() {
+    # Header information
+    _old_output="<<<check_mk>>>"
+    _old_output="${_old_output}\nVersion: ${MK_VERSION}"
+    _old_output="${_old_output}\nAgentOS: ${MK_OSSTR}"
+    _old_output="${_old_output}\nHostname: ${HOSTNAME}"
+    _old_output="${_old_output}\nAgentDirectory: ${MK_CONFDIR}"
+    _old_output="${_old_output}\nDataDirectory: ${MK_VARDIR}"
+    _old_output="${_old_output}\nSpoolDirectory: ${MK_SPOOLDIR}"
+    _old_output="${_old_output}\nPluginsDirectory: ${MK_PLUGINSDIR}"
+    _old_output="${_old_output}\nLocalDirectory: ${MK_LOCALDIR}"
+    json_open
+        json_obj_open "checkmk"
+            json_str Version "${MK_VERSION}"
+            json_str_append AgentOS "${MK_OSSTR}"
+            json_str_append Hostname "${HOSTNAME}"
+            json_str_append AgentDirectory "${MK_CONFDIR}"
+            json_str_append DataDirectory "${MK_VARDIR}"
+            json_str_append SpoolDirectory "${MK_SPOOLDIR}"
+            json_str_append PluginsDirectory "${MK_PLUGINSDIR}"
+            json_str_append LocalDirectory "${MK_LOCALDIR}"
+            is_set "${MK_ONLYFROM}" && json_str_append OnlyFrom "${MK_ONLYFROM}"
+            json_str_append OldOutput "${_old_output}"
+        json_obj_close
+        json_timestamp
+    json_close
+    unset -v _old_output
+
+    # Now parse through each module directory in sequence
+    for dir in "${MK_COREDIR}" "${MK_LOCALDIR}" "${MK_PLUGINSDIR}"; do
+        # Contain the 'cd' within a subshell so that we return
+        # where we came from once the subshell closes
+        (
+            [ "${dir}" = "${MK_LOCALDIR}" ] && mkecho '<<<local:sep(0)>>>'
+            if cd "${dir}" 2>/dev/null; then
+                for _skript in ./*; do
+                    if is_valid_plugin "${_skript}"; then
+                        ./"${_skript}"
+                    fi
+                done
+                # Call some plugins only every X'th second
+                for _skript in [1-9]*/*; do
+                    if is_valid_plugin "${_skript}"; then
+                        _skript_cache=$(mkecho "${_skript}" | sed 's/\//\\/')
+                        run_cached_cmd "local_${_skript_cache}" "${_skript%/*}" "${_skript}"
+                    fi
+                done
+                unset -v _skript _skript_cache
+            fi
+        )
+    done
+}
+
+# Determine whether we need to send our output via encryption or not
+case "${ENCRYPTION}" in
+    (yY*)   main | protect_output ;;
+    (*)     main ;;
+esac
