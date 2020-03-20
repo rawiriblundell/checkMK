@@ -1,0 +1,112 @@
+#!/bin/ksh
+# vim: noai:ts=4:sw=4:expandtab
+
+# Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
+# This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
+# conditions defined in the file COPYING, which is part of this source code package.
+
+# Temporarily set MK_LIBDIR.  setup_env_vars will re-set this.
+MK_LIBDIR="../lib"
+
+# Because _some_ of these need to be loaded in order, we load them _all_ in order
+. "${MK_LIBDIR}/setup_path.sh" || exit 1         # Define the PATH
+. "${MK_LIBDIR}/common_functions.sh" || exit 1   # Load our common functions
+. "${MK_LIBDIR}/setup_env_vars.sh" || exit 1     # Setup our basic ENV vars
+. "${MK_LIBDIR}/jsonprint.sh" || exit 1          # Import jsonprint, which assists us with our json formatting
+
+
+export MK_VARDIR=/var/lib/check_mk_agent
+
+help() {
+    echo "Usage: mk-job IDENT PROGRAM [ARGS...]"
+    echo ""
+    echo "Execute PROGRAM as subprocess while measuring performance information"
+    echo "about the running process and writing it to an output file. This file"
+    echo "can be monitored using Check_MK. The Check_MK Agent will forward the"
+    echo "information of all job files to the monitoring server."
+    echo ""
+    echo "This file is being distributed with the Check_MK Agent."
+}
+
+if [ $# -lt 2 ]; then
+    help >&2
+    exit 1
+fi
+
+# This may need to be conditional e.g. 'whoami' on some hosts
+username=$(id | awk -F')' '{print $1}' | awk -F'(' '{print $2}')
+output_path="${MK_VARDIR}/job/${username}"
+ident="${1}"
+running_file="${output_path}/${ident}.$$running"
+tmp_file="${MK_TMPDIR}/${ident}.$$running"
+
+shift
+
+if [ ! -d "${output_path}" ]; then
+    if [ "${username}" = root ] ; then
+        mkdir -p "${output_path}"
+    else
+        echo "ERROR: Missing output directory ${output_path} for non-root user '${username}'." >&2
+        exit 1
+    fi
+fi
+
+if ! type "${ident}" >/dev/null 2>&1; then
+    echo -e "ERROR: Cannot run $1. Command not found.\n" >&2
+    help >&2
+    exit 1
+fi
+
+if [ ! -w "${running_file}" ] ; then
+  # Looks like we are lacking the permissions to create this file..
+  # In this scenario no mk-job status file is created. We simply execute the command
+  exec "$@"
+fi
+
+get_epoch > "${running_file}" 2>/dev/null
+
+case "${MK_OSSTR}" in
+    (aix)
+        # aix support added in 9360d8c
+        /usr/bin/time -p "$@" 2>"${tmp_file}"                 # execute the command
+        return_code="${?}"                                    # save return code
+        echo "exit_code ${return_code}" >> "${running_file}"  # then add the return code
+                                                              # and finally add the output of /usr/bin/time
+        grep '^real   |^user   |^sys    ' "${tmp_file}" | 
+            sed \
+            -e 's/,/\./g' \
+            -e 's/^real  /real_time/g' \
+            -e 's/^user  /user_time/g' \
+            -e 's/^sys   /system_time/g' \
+            >> "${running_file}"
+        echo "reads 0\nwrites 0\nmax_res_kbytes 0\navg_mem_kbytes 0\ninvol_context_switches 0\nvol_context_switches 0" >> "${running_file}"
+    ;;
+    (linux)
+        /usr/bin/time -o "${running_file}" --append \
+            -f "exit_code %x\nreal_time %E\nuser_time %U\nsystem_time %S\nreads %I\nwrites %O\nmax_res_kbytes %M\navg_mem_kbytes %K\ninvol_context_switches %c\nvol_context_switches %w" "$@"
+        return_code="${?}"
+    ;;
+    (mac)
+        # OSX Support added in 9ed3f1b
+        # Requires GNU-time inzstalled (`brew install gnu-time`)
+        if [ -x /usr/local/bin/gtime ]; then
+            /usr/local/bin/gtime -o "${running_file}" --append \
+                -f "exit_code %x\nreal_time %E\nuser_time %U\nsystem_time %S\nreads %I\nwrites %O\nmax_res_kbytes %M\navg_mem_kbytes %K\ninvol_context_switches %c\nvol_context_switches %w" "$@"
+            return_code="${?}"
+        else
+            echo "gnu-time required"
+            exit 1
+        fi
+    ;;
+    (solaris)
+        info=$( (/usr/bin/time -p sh -c "$@ 2>/dev/null 1>&2" 2>&1; echo $?) | sed -e 's/,/\./g')
+        return_code=$(echo "${info}" | awk '{print $7}')
+
+        (echo "${info}" | awk '{print "exit_code "$7"\nreal_time "$2"\nuser_time "$4"\nsystem_time "$6""}') >> "${running_file}"
+        (echo -e "reads 0\nwrites 0\nmax_res_kbytes 0\navg_mem_kbytes 0\ninvol_context_switches 0\nvol_context_switches 0";) >> "${running_file}"
+    ;;
+esac
+
+mv "${running_file}" "${output_path}/${running_file}"
+rm -f "${tmp_file}" 2>/dev/null
+exit "${return_code}"
