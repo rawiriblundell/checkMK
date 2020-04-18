@@ -18,30 +18,45 @@ get_file_atime() {
 
 # Figure out which checksum method is available, start with sha256sum
 # If a file has a backslash or newline in it, then the hash may start with a '\'
-# This will upset the receiver of this json data as an invalid escape
+# This may upset the receiver of this information e.g. json data as an invalid escape
 # So for all of these functions, we use 'tr' to remove any instances of '\'
+# TO-DO: squash this down so that once a method is figured out, it's used permanently from then on
+#        This is to prevent going through this expensive dance every time this is called
 if command -v sha256sum > /dev/null 2>&1; then
     get_file_checksum() {
         sha256sum "${1:?No target specified}" | awk '{print $1}' | tr -d "\\\\"
     }
 # Next we try for the digest command i.e. Solaris
-elif digest -v -a sha256 "$1" > /dev/null 2>&1; then
+elif digest -v -a sha256 "${1}" > /dev/null 2>&1; then
     get_file_checksum() {
         digest -v -a sha256 "${1:?No target specified}" | 
         awk -F '= ' '{print $2}' |
         tr -d "\\\\"
     }
 # If digest won't play nice with sha256, try again with md5
-elif digest -v -a md5 "$1" > /dev/null 2>&1; then
+elif digest -v -a md5 "${1}" > /dev/null 2>&1; then
     get_file_checksum() {
         digest -v -a md5 "${1:?No target specified}" | 
         awk -F '= ' '{print $2}' | 
         tr -d "\\\\"
     }
-# 'shasum' should cater for AIX hosts, 'csum' may be worth looking at as well
-elif shasum -a 256 "$1" > /devnull 2>&1; then
+# 'shasum' should cater for AIX hosts
+elif shasum -a 256 "${1}" > /devnull 2>&1; then
     get_file_checksum() {
         shasum -a 256 "${1:?No target specified}" |
+        awk '{print $1}' |
+        tr -d "\\\\"
+    }
+# If 'shasum' doesn't work out on AIX, let's walk through 'csum' options
+elif csum -h SHA1 "${1}" > /devnull 2>&1; then
+    get_file_checksum() {
+        csum -h SHA1 "${1:?No target specified}" |
+        awk '{print $1}' |
+        tr -d "\\\\"
+    }
+elif csum -h MD5 "${1}" > /devnull 2>&1; then
+    get_file_checksum() {
+        csum -h MD5 "${1:?No target specified}" |
         awk '{print $1}' |
         tr -d "\\\\"
     }

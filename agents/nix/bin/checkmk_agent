@@ -1,4 +1,5 @@
 #!/bin/ksh
+#!/opt/checkmk/bin/posix_sh
 # vim: noai:ts=4:sw=4:expandtab
 
 # Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
@@ -8,7 +9,7 @@
 # Remove locale settings to eliminate localized outputs where possible
 # The locale logic here is used to make the Python encoding detection
 # work (see CMK-2778).
-MK_LOCALE=$(locale -a |grep -E '^C$|^C.UTF-8$|^c.utf8$' | head -n 1)
+MK_LOCALE=$(locale -a | grep -E '^C$|^C.UTF-8$|^c.utf8$' | head -n 1)
 if [ -z "${MK_LOCALE}" ]; then
     LC_ALL="${MK_LOCALE}"
     export LC_ALL
@@ -26,7 +27,18 @@ elif [ -z "${MK_FROM_NODE}" ]; then
 fi
 
 # Temporarily set MK_LIBDIR.  setup_env_vars will re-set this.
-MK_LIBDIR="../lib"
+# First, we need to figure out the path relative to this script
+# There are many ways to do this, this is the most portable that meets our needs
+script_path=$(dirname "$(which "${0}")")
+case "${script_path}" in
+    (.) script_path='..' ;;
+    (*)
+        # Strip the last directory off e.g. /opt/checkmk/agent/bin -> /opt/checkmk/agent
+        script_path=$(dirname "${script_path}")
+    ;;
+esac
+# Put '/lib' on the end, and we should now have a correct path
+MK_LIBDIR="${script_path}/lib"
 
 # Because _some_ of these need to be loaded in order, we load them _all_ in order
 . "${MK_LIBDIR}/setup_path.sh" || exit 1         # Define the PATH
@@ -41,6 +53,11 @@ MK_LIBDIR="../lib"
 
 ####################################################################################################
 
+# Function to pull any lines related to the invoking script from the conf
+get_conf_lines() {
+  grep -E "(^ALL|^${HOSTNAME})\:" "${MK_LOCALCONF}"
+}
+
 main() {
     # Header information
     _old_output="<<<check_mk>>>"
@@ -52,6 +69,7 @@ main() {
     _old_output="${_old_output}\nSpoolDirectory: ${MK_SPOOLDIR}"
     _old_output="${_old_output}\nPluginsDirectory: ${MK_PLUGINSDIR}"
     _old_output="${_old_output}\nLocalDirectory: ${MK_LOCALDIR}"
+    is_set "${MK_ONLYFROM}" && _old_output="${_old_output}\nOnlyFrom: ${MK_ONLYFROM}"
     json_open
         json_obj_open "checkmk"
             json_str Version "${MK_VERSION}"
@@ -70,31 +88,168 @@ main() {
     unset -v _old_output
 
     # Now parse through each module directory in sequence
-    for dir in "${MK_COREDIR}" "${MK_LOCALDIR}" "${MK_PLUGINSDIR}"; do
+    # TODO: Merge MRPE handling into this
+    #for dir in "${MK_COREDIR}" "${MK_LOCALDIR}" "${MK_PLUGINSDIR}"; do
         # Contain the 'cd' within a subshell so that we return
         # where we came from once the subshell closes
-        (
-            [ "${dir}" = "${MK_LOCALDIR}" ] && mkecho '<<<local:sep(0)>>>'
-            if cd "${dir}" 2>/dev/null; then
-                for _skript in ./*; do
-                    if is_valid_plugin "${_skript}"; then
-                        ./"${_skript}"
-                    fi
-                done
-                # Call some plugins only every X'th second
-                for _skript in [1-9]*/*; do
-                    if is_valid_plugin "${_skript}"; then
-                        _skript_cache=$(mkecho "${_skript}" | sed 's/\//\\/')
-                        run_cached_cmd "local_${_skript_cache}" "${_skript%/*}" "${_skript}"
-                    fi
-                done
-                unset -v _skript _skript_cache
-            fi
-        )
-    done
+        # (
+            # . "${MK_LIBDIR}/common_functions.sh" || exit 1   # Load our common functions
+            # # TODO: Simplify this, perhaps with a run_cmd() function
+            # if cd "${dir}" 2>/dev/null; then
+            #     # If the directory is the LOCALDIR, we need to print out a header
+            #     [ "${dir}" = "${MK_LOCALDIR}" ] && mkecho '<<<local:sep(0)>>>'
+            #     case "${dir}" in
+            #         ("${MK_LOCALDIR}")
+            #             check_type=local
+            #             mkecho '<<<local:sep(0)>>>'
+            #         ;;
+            #         ("${MK_MRPEDIR}")
+            #             check_type=mrpe
+            #             mkecho '<<<mrpe>>>'
+            #         ;;
+            #         ("${MK_PLUGINSDIR}") check_type=plugin ;;
+            #     esac
+            #     for _skript in ./*; do
+            #         if is_valid_plugin "${_skript}"; then
+            #             ./"${_skript}"
+            #         fi
+            #     done
+            #     # Call some plugins only every X'th second
+            #     for _skript in [1-9]*/*; do
+            #         if is_valid_plugin "${_skript}"; then
+            #             _skript_cache=$(mkecho "${_skript}" | sed 's/\//\\/')
+            #             run_cached_cmd "local_${_skript_cache}" "${_skript%/*}" "${_skript}"
+            #         fi
+            #     done
+            #     unset -v _skript _skript_cache
+            # fi
+
+            # # A rewrite might look something like this
+            # if cd "${dir}" 2>/dev/null; then
+            #     case "${cache_time}" in
+            #         (''|'0')
+            #             # TODO: Flatten so that 'runas' becomes:
+            #             # run_cmd "${script_name}" <-- runs as current user
+            #             # run_cmd --as "${run_as}" "${script_name}" <-- runs as defined user
+            #             # run_cmd --as "${run_as:-root}" "${script_name}" <-- best of both
+            #             case "${run_as}" in
+            #                 ('') ./"${script_name}" ;;
+            #                 (*) runas "${run_as}" "${script_name}" ;;
+            #             esac
+            #         ;;
+            #         (*)
+            #             case "${run_as}" in
+            #                 ('') run_cached_cmd "${script_name}" ;;
+            #                 (*) runas --cache "${run_as}" "${script_name}" ;;
+            #             esac
+            #         ;;
+            #     esac
+            # fi
+            #
+
+
+    #     )
+    # done
+
+    json_open
+    json_arr_open "Local Checks"
+    while IFS=':' read -r _ descr script args cache run_as itil svc_owner self_heal; do
+        # Build job information variable
+        case "${itil}" in
+        ('') service_name="${descr:-$script}" ;;
+        (*)  service_name="${itil}:${descr:-$thisJob}" ;;
+        esac
+        export service_name svc_owner self_heal
+        
+        if [ -x "${MK_LOCALDIR}"/"${script}" ]; then
+            check_output=$(eval "${MK_LOCALDIR}"/"${script}" "${args}")
+            check_rc="${?}"
+        elif [ -x "${MK_PLUGINSDIR}"/"${script}" ]; then
+            check_output=$(eval "${MK_PLUGINSDIR}"/"${script}" "${args}")
+            check_rc="${?}"
+        else
+            :
+        fi
+
+        case "${check_output}" in
+            ('{'*)
+                # This is likely json, so we pass it through
+                printf -- '%s\n' "${check_output}"
+            ;;
+            ([0-3]*)
+                # Legacy local check output
+                # Converting from format that looks like this:
+                # [status code] [servicename] [metrics] [status details]
+                # e.g.
+                # 0 myservice myvalue=73;80;90 My output text which may contain spaces
+                set -- ${check_output}
+                case "${1}" in
+                (0) script_status=OK ;;
+                (1) script_status=WARNING ;;
+                (2) script_status=CRITICAL ;;
+                (3) script_status=UNKNOWN ;;
+                esac
+
+                json_obj_open
+                    json_str "service_name" "${service_name}"
+                    json_num_append rc "${1}"
+                    json_str_append status "${script_status:-3}"
+                    json_str_append stdout "${*:4}"
+                    json_str_append metrics "${3}"
+                    json_str_append check_type local
+                    json_str_append script_name "${script}"
+                    json_str_append script_args "${args}"
+                    json_str_append script_runas "${runas:-$USER}"
+                    json_num_append cache_time "${cache:-0}"
+                    json_str_append service_owner "${svc_owner}"
+                json_obj_close
+            ;;
+            (*)
+                # For anything else, we expect Nagios standard output e.g. NRPE scripts
+                # This looks like
+                # [status]: [status details]|[metrics]
+                # The status/return code is the return/exit code of the script
+                # e.g.
+                # OK: The folder size is $size|size=$size
+                # This would have a return/exit code of 0
+                # This deprecates MRPE's formatting
+                set -- ${check_output}
+                case "${check_rc}" in
+                (0) script_status=OK ;;
+                (1) script_status=WARNING ;;
+                (2) script_status=CRITICAL ;;
+                (3) script_status=UNKNOWN ;;
+                esac
+                # Anything after a pipe symbol is metric data
+                metrics="${check_output##*|}"
+                # Anything before a pipe symbol and after a colon is check output data
+                script_stdout="${check_output%%|*}"
+                script_stdout="${script_stdout##*: }"
+
+                json_obj_open
+                    json_str "service_name" "${service_name}"
+                    json_num rc "${check_rc}"
+                    json_str_append status "${script_status:-3}"
+                    json_str_append stdout "${script_stdout}"
+                    json_str_append metrics "${metrics}"
+                    json_str_append check_type mrpe
+                    json_str_append script_name "${script}"
+                    json_str_append script_args "${args}"
+                    json_str_append script_runas "${runas:-$USER}"
+                    json_num_append cache_time "${cache:-0}"
+                    json_str_append service_owner "${svc_owner}"
+                json_obj_close
+            ;;
+        esac
+    done < <(get_conf_lines)
+    json_arr_close
+    json_timestamp
+    json_close
+
 }
 
 # Determine whether we need to send our output via encryption or not
+# The 'ENCRYPTION' var is defined in "${MK_CONFDIR}/encryption.cfg" and set by lib/protect_output.sh
 case "${ENCRYPTION}" in
     (yY*)   main | protect_output ;;
     (*)     main ;;

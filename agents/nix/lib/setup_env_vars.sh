@@ -41,12 +41,12 @@ MK_COREDIR="${MK_BASEDIR}/core-checks"
 # All executables in MK_PLUGINSDIR will simply be executed and their
 # ouput appended to the output of the agent. Plugins define their own
 # sections and must output headers with '<<<' and '>>>'
-MK_PLUGINSDIR="${MK_BASEDIR}/plugins-enabled"
+MK_PLUGINSDIR="${MK_BASEDIR}/plugins"
 
 # All executables in MK_LOCALDIR will be executed and their
 # output inserted into the section <<<local:sep(0)>>>. Please
 # refer to online documentation for details about local checks.
-MK_LOCALDIR="${MK_BASEDIR}/local-enabled"
+MK_LOCALDIR="${MK_BASEDIR}/local"
 
 # Define the path to the local check config file
 MK_LOCALCONF="${MK_CONFDIR}/checkmk-local.conf"
@@ -119,7 +119,6 @@ if [ -z "${SHELL}" ]; then
     fi
 fi
 
-
 # Figure out which shell we're going to use.  We do this to enforce a POSIX baseline, and to
 # minimise the amount of pure Bourne shell code that we have to write and maintain.
 # I have attempted to put the list of preferred shells in appropriate order
@@ -134,8 +133,12 @@ shList="${shList} /usr/bin/ksh93 /bin/ksh /usr/bin/ksh /bin/posix/sh /usr/bin/sh
 if bash --version >/dev/null 2>&1; then
     # Get the version and use expr to check if it's not higher than 2.05
     # If indeed it isn't, discount bash from shList
+    # Disabling SC2006 as this script is intentionally bourne sh
+    # in order to bootstrap the environment into minimum POSIX capability
+    # shellcheck disable=SC2006
     if expr "`bash -version | awk -F'[ (]' '/version/{print $4;exit}'`" '>' 2.05 >/dev/null; then
-        : #'
+        # No-op, as we may be invoked by an ancient version of 'sh that doesn't support '!' negation
+        :
     else
         shList="/usr/xpg4/bin/sh /usr/mbin/ksh /usr/bin/ksh93 /bin/ksh /usr/bin/ksh /bin/posix/sh /usr/bin/sh /sbin/sh"
     fi
@@ -144,14 +147,14 @@ fi
 # Go through each shell in the list and see if it exists.  Break the loop on the first one found.
 for shell in ${shList}; do
     if [ -x "${shell}" ]; then
-        readonly BEST_SHELL="${shell}"
-        export BEST_SHELL
+        readonly MK_SHELL="${shell}"
+        export MK_SHELL
         break
     fi
 done
 
 # Throw in a cursory check to ensure that a shell from the list has been found
-if [ -z "${BEST_SHELL}" ]; then
+if [ -z "${MK_SHELL}" ]; then
     printf -- '%s\n' "POSIX compatible shell required, one wasn't found."
     exit 1
 fi

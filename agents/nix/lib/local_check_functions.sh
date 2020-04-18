@@ -21,16 +21,8 @@ printOut() {
 }
 
 print_json() {
-    case "${2}" in
-      (*"="*) perf_data="${2}" ;;
-      (*)     perf_data='-' ;;
-    esac
-    printf -- '{ "%s": {"rc": %d, "perf_data": "%s", "check_output": "%s", "legacyfmt": "%s"}}' \
-      "${this_check}" \
-      "${1}" \
-      "${2}" \
-      "${@:3}" \
-      "${1} ${this_check} ${2}" "${@:3}"
+    printf -- '{ "%s": {"check_type": "%s", "status": "%s", "rc": %d, "stdout": "%s", "metrics": "%s", "script_name": "%s"}}' \
+      "${1:-unknown}" "${2}" "${3}" "${4}" "${5}" "${6}" "${7}"
 }
 
 printAuto() {
@@ -103,6 +95,31 @@ printAuto_json() {
     elif (( $# > 1 )); then
         print_json P "${@}" | printLong
     fi
+}
+
+# Represents a checkmk local style output in json
+# Classic local check format is as follows (with example):
+# [status code] [servicename] [metrics] [status details]
+# 0 myservice myvalue=73;80;90 My output text which may contain spaces
+# Which would appear in json like so:
+# {
+#   "service_name": "myservice",
+#   "check_type": "local",
+#   "status": "OK",
+#   "rc": 0,
+#   "stdout": "My output text which may contain spaces",
+#   "metrics": "myvalue=73;80;90",
+#   "script_name": "myservice.sh"
+# }
+print_json() {
+    case "${1}" in
+      (0) script_status=OK ;;
+      (1) script_status=WARNING ;;
+      (2) script_status=CRITICAL ;;
+      (*) script_status=UNKNOWN ;;
+    esac
+    printf -- '{"service_name": "%s", "check_type": "%s", "status": "%s", "rc": %d, "stdout": "%s", "metrics": "%s", "script_name": "%s"}' \
+      "${2}" "local" "${script_status}" "${1}" "$3}" "${4}" "${0}"
 }
 
 printOK_json() {

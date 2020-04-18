@@ -1,10 +1,35 @@
 #!/bin/ksh
 # vim: noai:ts=4:sw=4:expandtab
 
+# mk-job: runs monitored jobs
+
 # Copyright (C) 2019 tribe29 GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# Exempt from indentation rules as it's a heredoc
+help() {
+cat << EOF >&2
+Usage: mk-job ident PROGRAM [ARGS...]
+Execute PROGRAM as subprocess while measuring performance information
+about the running process and writing it to an output file. This file
+can be monitored using checkmk. The checkmk Agent will forward the
+information of all job files to the monitoring server.
+This file is being distributed with the checkmk Agent.
+EOF
+
+exit "${1:-0}"
+}
+
+# If args is less than 2, or 0, call `help()` and exit 1
+[ "${#}" -lt 2 ] && help 1
+[ "${#}" -eq 0 ] && help 1
+
+# If help is requested, deliver it and exit 0
+[ "${1}" = "-h" ] && help 0
+[ "${1}" = "--help" ] && help 0
+
+# If we get to this point, we can continue setting up...
 # Temporarily set MK_LIBDIR.  setup_env_vars will re-set this.
 MK_LIBDIR="../lib"
 
@@ -14,25 +39,6 @@ MK_LIBDIR="../lib"
 . "${MK_LIBDIR}/setup_env_vars.sh" || exit 1     # Setup our basic ENV vars
 . "${MK_LIBDIR}/jsonprint.sh" || exit 1          # Import jsonprint, which assists us with our json formatting
 
-
-export MK_VARDIR=/var/lib/check_mk_agent
-
-help() {
-    echo "Usage: mk-job IDENT PROGRAM [ARGS...]"
-    echo ""
-    echo "Execute PROGRAM as subprocess while measuring performance information"
-    echo "about the running process and writing it to an output file. This file"
-    echo "can be monitored using Check_MK. The Check_MK Agent will forward the"
-    echo "information of all job files to the monitoring server."
-    echo ""
-    echo "This file is being distributed with the Check_MK Agent."
-}
-
-if [ $# -lt 2 ]; then
-    help >&2
-    exit 1
-fi
-
 # This may need to be conditional e.g. 'whoami' on some hosts
 username=$(id | awk -F')' '{print $1}' | awk -F'(' '{print $2}')
 output_path="${MK_VARDIR}/job/${username}"
@@ -40,30 +46,32 @@ ident="${1}"
 running_file="${output_path}/${ident}.$$running"
 tmp_file="${MK_TMPDIR}/${ident}.$$running"
 
-shift
+# Shift to the rest of the positional parameters
+shift 1
 
 if [ ! -d "${output_path}" ]; then
     if [ "${username}" = root ] ; then
         mkdir -p "${output_path}"
     else
-        echo "ERROR: Missing output directory ${output_path} for non-root user '${username}'." >&2
+        mkecho "ERROR: Missing output directory ${output_path} for non-root user '${username}'." >&2
         exit 1
     fi
 fi
 
-if ! type "${ident}" >/dev/null 2>&1; then
-    echo -e "ERROR: Cannot run $1. Command not found.\n" >&2
-    help >&2
-    exit 1
+if ! is_command "${ident}" >/dev/null 2>&1; then
+    mkecho -e "ERROR: Cannot run $1. Command not found.\n" >&2
+    help 1
 fi
 
 if [ ! -w "${running_file}" ] ; then
-  # Looks like we are lacking the permissions to create this file..
-  # In this scenario no mk-job status file is created. We simply execute the command
-  exec "$@"
+    # Looks like we are lacking the permissions to create this file..
+    # In this scenario no mk-job status file is created. We simply execute the command
+    exec "$@"
+else
+    get_epoch > "${running_file}" 2>/dev/null
 fi
 
-get_epoch > "${running_file}" 2>/dev/null
+
 
 case "${MK_OSSTR}" in
     (aix)
@@ -102,11 +110,14 @@ case "${MK_OSSTR}" in
         info=$( (/usr/bin/time -p sh -c "$@ 2>/dev/null 1>&2" 2>&1; echo $?) | sed -e 's/,/\./g')
         return_code=$(echo "${info}" | awk '{print $7}')
 
-        (echo "${info}" | awk '{print "exit_code "$7"\nreal_time "$2"\nuser_time "$4"\nsystem_time "$6""}') >> "${running_file}"
-        (echo -e "reads 0\nwrites 0\nmax_res_kbytes 0\navg_mem_kbytes 0\ninvol_context_switches 0\nvol_context_switches 0";) >> "${running_file}"
+        (mkecho "${info}" |
+            awk '{print "exit_code "$7"\nreal_time "$2"\nuser_time "$4"\nsystem_time "$6""}'
+        ) >> "${running_file}"
+        (mkecho -e "reads 0\nwrites 0\nmax_res_kbytes 0\navg_mem_kbytes 0\ninvol_context_switches 0\nvol_context_switches 0";
+        ) >> "${running_file}"
     ;;
 esac
 
-mv "${running_file}" "${output_path}/${running_file}"
-rm -f "${tmp_file}" 2>/dev/null
+mv "${running_file}" "${output_path}/${ident}"
+[ -e "${tmp_file}" ] && rm -f "${tmp_file}"
 exit "${return_code}"

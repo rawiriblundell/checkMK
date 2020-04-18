@@ -1,0 +1,51 @@
+#!/bin/bash
+# check_proc - Monitor number of running processes
+# Purpose:      NRPE script to check that a named process has 
+#	              the correct number of pids
+# Author:       DSLWG-ACC UNIX OPS, Datacom
+# Copyright:    See provided LICENCE file
+# Date:         20150413
+
+# Usage:        ./check_proc [Target process name] [Number of PIDS (default: 0)]
+########################################
+
+. "${MK_LIBDIR}/local_check_functions.sh" || exit 1
+
+# Setup our variables and ensure we have the required input
+if [[ -z "${1}" ]]; then
+  printCrit "No process name supplied" \
+    "Usage: ./check_proc [Target process name] [Number of PIDS (default: 0)]"
+  exit 0
+else
+  procName="${1}"    # name of process to check
+fi
+
+# Set the desired number of processes running, 0 means at least one
+# If this parameter is blank, default to 0
+targetCount="${2:-0}"
+
+# Now check for the process and count how many PIDs we have for it
+procCount=$(pgrep -c "${procName}")
+
+# Now we compare and act as required.
+if (( targetCount == 0 )); then
+  # one or more processes should be running
+  if (( procCount > 0 )); then
+    printOK "Process ${procName} running"
+    exit 0
+  else
+    printCrit "Process ${procName} not running"
+    #triggerCommand
+    exit 0
+  fi
+else
+  # exact count of processes should be running
+  if (( procCount != targetCount )); then
+    printCrit "Process ${procName} not running ${targetCount} times"
+    #triggerCommand
+    exit 0
+  else
+    printOK "Process ${procName} running ${targetCount} times"
+    exit 0
+  fi
+fi

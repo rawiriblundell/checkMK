@@ -15,8 +15,6 @@ run_mrpe() {
     _mrpe_plugin=${_mrpe_cmdline%% *}
     _mrpe_output=$(eval "${_mrpe_cmdline}")
 
-    # We ignore the shellcheck alerts for 'mkecho -n' as our 'mkecho()' solves this
-    # shellcheck disable=SC2039
     mkecho -n "(${_mrpe_plugin##*/}) ${_mrpe_descr} ${?} ${_mrpe_output}" | tr \\n \\1
     mkecho
 
