@@ -100,6 +100,32 @@ is_set() {
     fi
 }
 
+is_true() {
+    case "${1}" in
+        ([tT][rR][uU][eE])     return 0 ;;
+        ([fF][aA][lL][sS][eE]) return 1 ;;
+        ([yY]|[yY][eE][sS])    return 0 ;;
+        ([nN]|[nN][oO])        return 1 ;;
+        ([oO][nN])             return 0 ;;
+        ([oO][fF][fF])         return 1 ;;
+        (0)                    return 0 ;;
+        (''|*)                 return 1 ;;
+    esac
+}
+
+is_false() {
+    case "${1}" in
+        ([tT][rR][uU][eE])     return 1 ;;
+        ([fF][aA][lL][sS][eE]) return 0 ;;
+        ([yY]|[yY][eE][sS])    return 1 ;;
+        ([nN]|[nN][oO])        return 0 ;;
+        ([oO][nN])             return 1 ;;
+        ([oO][fF][fF])         return 0 ;;
+        (0)                    return 1 ;;
+        (''|*)                 return 0 ;;
+    esac
+}
+
 is_symlink() {
     [ -L "${1:?No file specified}" ]
 }
@@ -123,12 +149,46 @@ is_valid_plugin() {
     esac
 }
 
-# 'coreutils' 5.3.0 broke how 'stat' handled its output.  This was reverted
-# in STABLE in 5.9.4.  Just in case we happen across this version
-# we catch it and build a workaround to correct its behaviour
+# GNU 'coreutils' 5.3.0 broke how 'stat' handled its output.  This was reverted in 5.9.4 STABLE.
 # See: https://lists.gnu.org/archive/html/bug-coreutils/2005-12/msg00157.html
-if stat --version 2>&1 | head -n 1 | grepq "5.3.0"; then
-    stat() {
-        printf -- '%s\n' "$(command stat "${@}")"
-    }
-fi
+# If 'MK_STAT_BUG' is set to 'true', then enable our override function.
+# This corrects the behaviour of 'stat' globally
+case "${MK_STAT_BUG}" in
+    (true)
+        stat() {
+            printf -- '%s\n' "$(command stat "${@}")"
+        }
+    ;;
+    (false)
+        # No-op
+        :
+    ;;
+    (''|*)
+        if stat --version | grepq GNU; then
+        # If we get to this point, then MK_STAT_BUG isn't set at all
+        if stat --version 2>&1 | head -n 1 | grepq "5.[3-9].[0-9]"; then
+            # The following sequence of transformations converts a semantic version to an integer
+            # Where the Major number is untouched, and the Minor and Patch numbers are zero padded
+            # e.g. 'stat (GNU coreutils) 8.28' --> '82800'
+            # This technique allows us to do simple integer based version comparisons
+            stat_version=$(stat --version | head -n 1)
+            stat_version="${stat_version//[!0-9.]/}"
+            # We want word splitting here so that 'set' assigns each 'word' appropriately
+            # shellcheck disable=SC2086
+            set -- ${stat_version//./ }
+            stat_version="${1}$(printf -- '%02d' "${2}" "${3:-0}")"
+
+            if [ "${stat_version}" -ge 50300 ] && [ "${stat_version}" -lt 50904 ]; then
+                printf -- '%s\n' "MK_STAT_BUG=true" >> "${mk_conf}"
+                stat() {
+                    printf -- '%s\n' "$(command stat "${@}")"
+                }
+            else
+                printf -- '%s\n' "MK_STAT_BUG=false" >> "${mk_conf}"
+            fi
+        fi
+        else
+            printf -- '%s\n' "MK_STAT_BUG=false" >> "${mk_conf}"
+        fi
+    ;;
+esac
