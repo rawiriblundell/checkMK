@@ -60,16 +60,6 @@ get_conf_lines() {
 
 main() {
     # Header information
-    _old_output="<<<check_mk>>>"
-    _old_output="${_old_output}\nVersion: ${MK_VERSION}"
-    _old_output="${_old_output}\nAgentOS: ${MK_OSSTR}"
-    _old_output="${_old_output}\nHostname: ${HOSTNAME}"
-    _old_output="${_old_output}\nAgentDirectory: ${MK_CONFDIR}"
-    _old_output="${_old_output}\nDataDirectory: ${MK_VARDIR}"
-    _old_output="${_old_output}\nSpoolDirectory: ${MK_SPOOLDIR}"
-    _old_output="${_old_output}\nPluginsDirectory: ${MK_PLUGINSDIR}"
-    _old_output="${_old_output}\nLocalDirectory: ${MK_LOCALDIR}"
-    is_set "${MK_ONLYFROM}" && _old_output="${_old_output}\nOnlyFrom: ${MK_ONLYFROM}"
     json_open
         json_obj_open "checkmk"
             json_str Version "${MK_VERSION}"
@@ -81,11 +71,9 @@ main() {
             json_str_append PluginsDirectory "${MK_PLUGINSDIR}"
             json_str_append LocalDirectory "${MK_LOCALDIR}"
             is_set "${MK_ONLYFROM}" && json_str_append OnlyFrom "${MK_ONLYFROM}"
-            json_str_append OldOutput "${_old_output}"
         json_obj_close
         json_timestamp
     json_close
-    unset -v _old_output
 
     # Now parse through each module directory in sequence
     # TODO: Merge MRPE handling into this

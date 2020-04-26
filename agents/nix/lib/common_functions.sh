@@ -149,7 +149,27 @@ is_valid_plugin() {
     esac
 }
 
-# GNU 'coreutils' 5.3.0 broke how 'stat' handled its output.  This was reverted in 5.9.4 STABLE.
+# Convert a three number style semantic version number to an integer for version comparisons
+# This zero pads the second and third numbers and removes any non-numerical chars
+# e.g. 'openssl 1.0.2k-fips' -> 10002
+semver_to_int() {
+    _sem_ver="${1:?No version number supplied}"
+
+    # Strip the variable of any non-numerics or dots
+    _sem_ver="$( echo "${_sem_ver}" | sed 's/[^0-9.]//g')"
+
+    # Swap the dots for spaces and assign the outcome to the positional param array
+    # We want word splitting here, so we disable shellcheck's complaints
+    # shellcheck disable=SC2046
+    set -- $(echo "${_sem_ver}" | tr '.' ' ')
+
+    # Assemble and print our integer
+    printf -- '%d%02d%02d' "${1}" "${2:-0}" "${3:-0}"
+
+    unset -v _sem_ver
+}
+
+# GNU 'coreutils' 5.3.0 broke how 'stat' handled its output.  This was reverted in 5.92 STABLE.
 # See: https://lists.gnu.org/archive/html/bug-coreutils/2005-12/msg00157.html
 # If 'MK_STAT_BUG' is set to 'true', then enable our override function.
 # This corrects the behaviour of 'stat' globally
@@ -164,21 +184,12 @@ case "${MK_STAT_BUG}" in
         :
     ;;
     (''|*)
-        if stat --version | grepq GNU; then
-        # If we get to this point, then MK_STAT_BUG isn't set at all
-        if stat --version 2>&1 | head -n 1 | grepq "5.[3-9].[0-9]"; then
-            # The following sequence of transformations converts a semantic version to an integer
-            # Where the Major number is untouched, and the Minor and Patch numbers are zero padded
-            # e.g. 'stat (GNU coreutils) 8.28' --> '82800'
-            # This technique allows us to do simple integer based version comparisons
-            stat_version=$(stat --version | head -n 1)
-            stat_version="${stat_version//[!0-9.]/}"
-            # We want word splitting here so that 'set' assigns each 'word' appropriately
-            # shellcheck disable=SC2086
-            set -- ${stat_version//./ }
-            stat_version="${1}$(printf -- '%02d' "${2}" "${3:-0}")"
+        # If we get to this point, then MK_STAT_BUG isn't set
+        if stat --version 2>&1 | grepq "GNU.*5.[3-9]"; then
+            # Convert the version information from semantic versioning to an integer
+            stat_version=$(semver_to_int "$(stat --version 2>&1 | head -n 1)")
 
-            if [ "${stat_version}" -ge 50300 ] && [ "${stat_version}" -lt 50904 ]; then
+            if [ "${stat_version}" -ge 50300 ] && [ "${stat_version}" -lt 59200 ]; then
                 printf -- '%s\n' "MK_STAT_BUG=true" >> "${mk_conf}"
                 stat() {
                     printf -- '%s\n' "$(command stat "${@}")"
@@ -186,7 +197,6 @@ case "${MK_STAT_BUG}" in
             else
                 printf -- '%s\n' "MK_STAT_BUG=false" >> "${mk_conf}"
             fi
-        fi
         else
             printf -- '%s\n' "MK_STAT_BUG=false" >> "${mk_conf}"
         fi

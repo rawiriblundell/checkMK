@@ -38,7 +38,7 @@ protect_output() {
     fi
 
     # Convert the openssl version to an integer e.g. 1.0.2k-fips -> 10002
-    _opensslVer=$(openssl version | awk '{print $2}' | awk -F . '{print (($1 * 100) + $2) * 100+ $3}')
+    _opensslVer=$(semver_to_int "$(openssl version | awk '{print $2}')")
     # shellcheck disable=SC2039
     if [ "${_opensslVer}" -ge 10000 ]; then
         _encCode="02"
