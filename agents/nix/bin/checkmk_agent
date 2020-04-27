@@ -7,14 +7,15 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 # Remove locale settings to eliminate localized outputs where possible
-# The locale logic here is used to make the Python encoding detection
-# work (see CMK-2778).
-MK_LOCALE=$(locale -a | grep -E '^C$|^C.UTF-8$|^c.utf8$' | head -n 1)
-if [ -z "${MK_LOCALE}" ]; then
-    LC_ALL="${MK_LOCALE}"
-    export LC_ALL
-fi
-unset LANG
+# The locale logic here is used to make the Python encoding detection work (see CMK-2778).
+unset -v LANG
+case "$(locale -a | paste -sd ' ' -)" in
+    (*'C.UTF-8'*) LC_ALL="C.UTF-8" ;;
+    (*'c.utf-8'*) LC_ALL="c.utf-8" ;;
+    (*'C'*|*)     LC_ALL="C" ;;
+esac
+LC_ALL="${LC_ALL:-C}"
+export LC_ALL
 
 # Close standard input (for security reasons) and stderr when not explicitly in debug mode.
 # When the nodes agent is executed by a e.g. docker node in a container,
