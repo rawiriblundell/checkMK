@@ -78,18 +78,53 @@ else
     unset IS_LXC_CONTAINER
 fi
 
+# Because $SHELL is an unreliable thing to test against (e.g. SHLVL > 1), we provide this function
+get_shell() {
+    if [ -r "/proc/$$/cmdline" ]; then
+        # We use 'tr' because 'cmdline' files have NUL terminated lines
+        # TO-DO: Possibly handle multi-word output e.g. 'busybox ash'
+        printf -- '%s\n' "$(tr '\0' ' ' </proc/"$$"/cmdline)"
+    else
+        case "${BASH_VERSION}" in (*.*) printf -- '%s\n' "bash"; return 0 ;; esac
+        case "${KSH_VERSION}" in (*.*) printf -- '%s\n' "ksh"; return 0 ;; esac
+        case "${ZSH_VERSION}" in (*.*) printf -- '%s\n' "zsh"; return 0 ;; esac
+        # If we get to this point, fail out:
+        return 1
+    fi
+}
+
 # Function to replace "if type [somecmd]" idiom
 # 'command -v' tends to be more robust vs 'which' and 'type' based tests
 inpath() {
     command -v "${1:?No command to test}" >/dev/null 2>&1
 }
 
-# Prefer (relatively) new /usr/bin/timeout from coreutils against
-# our shipped waitmax. waitmax is statically linked and crashes on
-# some Ubuntu versions recently.
+# We prefer the 'timeout' command shipped with 'coreutils' v7.0 and newer
+# Our shipped 'waitmax' is statically linked and crashes on recent Ubuntu releases
 if inpath timeout; then
     waitmax() {
-        timeout "$@"
+        # The busybox version of 'timeout' requires '-t' to define the duration
+        # So if we're in busybox, we need to insert '-t' into '$*'
+        # This means that 'waitmax' invocations MUST follow a standard pattern
+        case "$(get_shell)" in
+            (*busybox*)
+                # This translates calls like 'waitmax -s 9 5 somecommand'
+                #   to instead read like 'waitmax -s 9 -t 5 somecommand'
+                # Likewise, calls like 'waitmax 5 somecommand'
+                #   are translated to look like 'waitmax -t 5 somecommand'
+                # Nb: busybox 'timeout' defaults to SIGTERM, GNU's to SIGALRM
+                case "${1}" in
+                    (-s)
+                        _signal="${2}"
+                        shift 2
+                        set -- "-s ${_signal} -t ${*}"
+                    ;;
+                    (*) set -- "-t ${*}" ;;
+                esac
+            ;;
+        esac
+        timeout "${@}"
+        unset -v _signal
     }
     export -f waitmax
 fi
@@ -124,7 +159,11 @@ fi
 section_checkmk() {
     echo "<<<check_mk>>>"
     echo "Version: 2.1.0i1"
-    echo "AgentOS: linux"
+    if [ -e /etc/openwrt_release ]; then
+        echo "AgentOS: openwrt"
+    else
+        echo "AgentOS: linux"
+    fi
     echo "Hostname: $(hostname)"
     echo "AgentDirectory: $MK_CONFDIR"
     echo "DataDirectory: $MK_VARDIR"
@@ -185,29 +224,63 @@ section_mem() {
 }
 
 section_cpu() {
-    if [ "$(uname -m)" = "armv7l" ] || [ "$(uname -m)" = "armv6l" ]; then
-        CPU_REGEX='^processor'
-    else
-        CPU_REGEX='^CPU|^processor'
-    fi
-    NUM_CPUS=$(grep -c -E $CPU_REGEX </proc/cpuinfo)
+    case "$(uname -m)" in
+        (armv71|armv61) _cpu_regex='^processor' ;;
+        (''|*)          _cpu_regex='^CPU|^processor' ;;
+    esac
+    _num_cpus=$(grep -c -E ${_cpu_regex} </proc/cpuinfo)
 
     if [ -z "$IS_DOCKERIZED" ] && [ -z "$IS_LXC_CONTAINER" ]; then
         echo '<<<cpu>>>'
-        echo "$(cat /proc/loadavg) $NUM_CPUS"
+        echo "$(cat /proc/loadavg) ${_num_cpus}"
         if [ -f "/proc/sys/kernel/threads-max" ]; then
             cat /proc/sys/kernel/threads-max
         fi
     else
-
         if [ -n "$IS_DOCKERIZED" ]; then
             echo '<<<docker_container_cpu>>>'
         else
             echo '<<<lxc_container_cpu>>>'
         fi
         grep "^cpu " /proc/stat
-        echo "num_cpus $NUM_CPUS"
+        echo "num_cpus ${_num_cpus}"
         cat /sys/fs/cgroup/cpuacct/cpuacct.stat
+    fi
+    unset -v _cpu_regex _num_cpus
+}
+
+# Status of CUPS printer queues
+section_cups() {
+    [ -z "${MK_SKIP_CUPS}" ] && return 0
+    if inpath lpstat; then
+        if pgrep -f "\bcupsd" >/dev/null 2>&1; then
+            # first define a function to check cups
+            cups_queues() {
+                CPRINTCONF=/etc/cups/printers.conf
+                if [ -r "$CPRINTCONF" ]; then
+                    LOCAL_PRINTERS=$(grep -E "<(Default)?Printer .*>" $CPRINTCONF | awk '{print $2}' | sed -e 's/>//')
+                    lpstat -p | while read -r LINE; do
+                        PRINTER=$(echo "$LINE" | awk '{print $2}')
+                        if echo "$LOCAL_PRINTERS" | grep -q "$PRINTER"; then
+                            echo "$LINE"
+                        fi
+                    done
+                    echo '---'
+                    lpstat -o | while read -r LINE; do
+                        PRINTER="${LINE%%-*}"
+                        if echo "$LOCAL_PRINTERS" | grep -q "$PRINTER"; then
+                            echo "$LINE"
+                        fi
+                    done
+                else
+                    lpstat -p
+                    echo '---'
+                    lpstat -o | sort
+                fi
+            }
+            # Use cups_queues function with run_cached and cache time of 5 mins
+            run_cached -s cups_queues 300 "cups_queues"
+        fi
     fi
 }
 
@@ -231,25 +304,22 @@ section_df() {
         return
     fi
 
-    # The exclusion list is getting a bit of a problem.
-    # -l should hide any remote FS but seems to be all but working.
-    local excludefs
-    excludefs="-x smbfs -x cifs -x iso9660 -x udf -x nfsv4 -x nfs -x mvfs -x prl_fs -x squashfs -x devtmpfs -x autofs"
+    # Build a regex of fs types that we want to filter from df's output
+    _df_excludefs="Type|none|udev|devtmpfs|tmpfs|smbfs|cifs|iso9660"
+    _df_excludefs="${_df_excludefs}|udf|nfsv4|nfs|mvfs|prl_fs|squashfs|autofs"
+
     if [ -z "$IS_LXC_CONTAINER" ]; then
-        excludefs+=" -x zfs"
+        _df_excludefs="${_df_excludefs}|zfs"
     fi
 
+    # We use awk to restrict our filtering to the contents of the second column
     echo '<<<df>>>'
-    # We really *need* word splitting below!
-    # shellcheck disable=SC2086
-    df -PTlk ${excludefs} | sed 1d
+    df -PTk 2>/dev/null | awk -v filter="${_df_excludefs}" '$2 !~ filter'
 
     # df inodes information
     echo '<<<df>>>'
     echo '[df_inodes_start]'
-    # We really *need* word splitting below!
-    # shellcheck disable=SC2086
-    df -PTli ${excludefs} | sed 1d
+    df -PTki 2>/dev/null | awk -v filter="${_df_excludefs}" '$2 !~ filter'
     echo '[df_inodes_end]'
 }
 
@@ -266,10 +336,11 @@ sections_systemd() {
 section_zfs() {
     if inpath zfs; then
         echo '<<<zfsget:sep(9)>>>'
-        zfs get -t filesystem,volume -Hp name,quota,used,avail,mountpoint,type 2>/dev/null
+        zfs get -t filesystem,volume -Hp name,quota,used,avail,mountpoint,type 2>/dev/null ||
+            zfs get -Hp name,referenced,avail,mountpoint,type | sed 's/referenced/used/g'
         echo '<<<zfsget>>>'
         echo '[df]'
-        df -PTlk -t zfs | sed 1d
+        df -PTk | awk '$2 ~ /zfs/{print $0}'
     fi
 }
 
@@ -308,6 +379,7 @@ section_nfs_mounts() {
     fi
 }
 
+# Check mount options. Filesystems may switch to 'ro' in case of a read error.
 section_mounts() {
     echo '<<<mounts>>>'
     grep ^/dev </proc/mounts | grep -v " squashfs "
@@ -321,7 +393,17 @@ section_ps() {
         if [ -e /sys/fs/cgroup ]; then
             CGROUP="cgroup:512,"
         fi
-        echo "[header] $(ps ax -o "$CGROUP"user:32,vsz,rss,cputime,etime,pid,command --columns 10000 | tr -s ' ')"
+        case "$(get_shell)" in
+            (*busybox*)
+                # Available fields in my copy of busybox ps:
+                # user,group,comm,args,pid,ppid,pgid,nice,rgroup,ruser,tty,vsz,sid,stat,rss
+                # Suggest something like:
+                echo "[header] $(ps ax -o user,vsz,rss,pid,comm,args | sed -e 1d -e 's/ *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) *\([^ ]*\) */(\1,\2,\3,\4\/\5,\6) /')"
+            ;;
+            (''|*)
+                echo "[header] $(ps ax -o "$CGROUP"user:32,vsz,rss,cputime,etime,pid,command --columns 10000 | tr -s ' ')"
+            ;;
+        esac
     fi
 }
 
@@ -425,9 +507,8 @@ section_chrony() {
     if inpath chronyc; then
         # Force successful exit code. Otherwise section will be missing if daemon not running
         #
-        # The "| cat" has been added for some kind of regression in RedHat 7.5. The
-        # SELinux rules shipped with that release were denying the chronyc call
-        # without cat.
+        # The "| cat" has been added for some kind of regression in RedHat 7.5.
+        # The SELinux rules shipped with that release were denying the chronyc call without cat.
         run_cached -s chrony 30 "waitmax 5 chronyc -n tracking | cat || true"
     fi
 }
@@ -590,7 +671,11 @@ section_drbd() {
 }
 
 section_heartbeat() {
-    if [ -S /var/run/heartbeat/crm/cib_ro -o -S /var/run/crm/cib_ro ] || pgrep "^(crmd|pacemaker-contr)$" >/dev/null 2>&1; then
+    if {
+            [ -S /var/run/heartbeat/crm/cib_ro ] || 
+            [ -S /var/run/crm/cib_ro ] || 
+            pgrep "^(crmd|pacemaker-contr)$" >/dev/null 2>&1
+        }; then
         echo '<<<heartbeat_crm>>>'
         TZ=UTC crm_mon -1 -r | grep -v ^$ | sed 's/^ //; /^\sResource Group:/,$ s/^\s//; s/^\s/_/g'
     fi
@@ -773,6 +858,9 @@ section_zpool() {
     fi
 }
 
+# Veritas Cluster Server
+# Software is always installed in /opt/VRTSvcs.
+# Secure mode must be off to allow root to execute commands
 section_veritas_cluster() {
     if [ -x /opt/VRTSvcs/bin/haclus ]; then
         echo "<<<veritas_vcs>>>"
@@ -853,6 +941,10 @@ section_mkbackup() {
     fi
 }
 
+# Get statistics about monitored jobs. Below the job directory there
+# is a sub directory per user that ran a job. That directory must be
+# owned by the user so that a symlink or hardlink attack for reading
+# arbitrary files can be avoided.
 section_job() {
     if pushd "$MK_VARDIR/job" >/dev/null; then
         echo '<<<job>>>'
@@ -870,18 +962,32 @@ section_job() {
     fi
 }
 
+# Gather thermal information provided e.g. by acpi
+# At the moment only supporting thermal sensors
 section_thermal() {
-    if [ -z "$IS_DOCKERIZED" ] && [ -z "$IS_LXC_CONTAINER" ] && ls /sys/class/thermal/thermal_zone* >/dev/null 2>&1; then
+    if {
+            [ -z "$IS_DOCKERIZED" ] && 
+            [ -z "$IS_LXC_CONTAINER" ] && 
+            ls /sys/class/thermal/thermal_zone* >/dev/null 2>&1
+        }; then
         echo '<<<lnx_thermal:sep(124)>>>'
-        for F in /sys/class/thermal/thermal_zone*; do
-            line="${F##*/}"
-            if [ ! -e "$F/mode" ]; then line="${line}|-"; else line="${line}|$(cat "$F"/mode)"; fi
-            line="${line}|$(cat "$F"/{type,temp} | tr \\n "|")"
-            for G in $(ls "$F"/trip_point_*_{temp,type}); do
-                line="${line}$(tr <"$G" \\n "|")"
+        for _sysPath in /sys/class/thermal/thermal_zone*; do
+            _line="${_sysPath##*/}"
+            if [ ! -e "${_sysPath}/mode" ]; then 
+                _line="${_line}|-"
+            else
+                _line="${_line}|$(cat "${_sysPath}"/mode)"
+            fi
+            _line="${_line}|$(cat "${_sysPath}"/type "${_sysPath}"/temp 2>/dev/null | tr \\n "|")"
+            for _temp in "${_sysPath}"/trip_point_*_temp; do
+                _line="${_line}$(tr <"${_temp}" \\n "|")"
             done
-            echo "${line%?}"
+            for _type in "${_sysPath}"/trip_point_*_type; do
+                _line="${_line}$(tr <"${_type}" \\n "|")"
+            done
+            echo "${_line%?}"
         done
+        unset _sysPath _line _temp _type
     fi
 }
 
@@ -951,7 +1057,7 @@ run_fileinfo() {
     ' -- "$MK_CONFDIR"
 }
 
-run_liveupdate() {
+run_liveupdate() { 
     if [ -e "$MK_CONFDIR/real_time_checks.cfg" ]; then
         if [ -z "$REMOTE" ]; then
             echo "ERROR: \$REMOTE not specified. Not starting Real-Time Checks." >&2
@@ -1065,15 +1171,16 @@ run_runas_executor() {
     fi
 }
 
+# This function ensures that a file is executable and
+# does not have certain patterns within its name
 is_valid_plugin() {
-    # NOTE: Due to an escaping-related bug in some old bash versions
-    # (3.2.x), we have to use an intermediate variable for the pattern.
-    pattern='\.dpkg-(new|old|temp)$'
-    #TODO Maybe we should change this mechanism
-    # shellcheck disable=SC2015
-    [[ -f "$1" && -x "$1" && ! "$1" =~ $pattern ]] && true || false
+    case "${1:?No plugin defined}" in
+        (*dpkg-new)  return 1 ;;
+        (*dpkg-old)  return 1 ;;
+        (*dpkg-temp) return 1 ;;
+        (*)          [ -x "${1}" ] && return "${?}" ;;
+    esac
 }
-
 run_local_checks() {
     # Local checks
     echo '<<<local:sep(0)>>>'
@@ -1291,7 +1398,6 @@ run_real_time_checks() {
 }
 
 # ntpq helper function
-
 get_ntpq() {
     inpath ntpq || return 1
     run_cached -s ntp 30 "waitmax 5 ntpq -np | sed -e 1,2d -e 's/^\(.\)/\1 /' -e 's/^ /%/' || true"
@@ -1364,8 +1470,7 @@ section_checkmk
 # consider it as hanging. We need waitmax.
 [ -z "$MK_SKIP_NFS_MOUNTS" ] && section_nfs_mounts
 
-# Check mount options. Filesystems may switch to 'ro' in case
-# of a read error.
+# Check mount options. Filesystems may switch to 'ro' in case of a read error.
 [ -z "$MK_SKIP_MOUNTS" ] && section_mounts
 
 [ -z "$MK_SKIP_PS" ] && section_ps
@@ -1498,6 +1603,9 @@ section_mkbackup
 [ -z "$MK_SKIP_PROXMOX" ] && section_proxmox
 
 [ -z "$MK_SKIP_HAPROXY" ] && section_haproxy
+
+# lpstat printing
+section_cups
 
 # Start new liveupdate process in background on each agent execution. Starting
 # a new live update process will terminate the old one automatically after
