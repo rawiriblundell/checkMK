@@ -99,32 +99,39 @@ inpath() {
     command -v "${1:?No command to test}" >/dev/null 2>&1
 }
 
-# We prefer the 'timeout' command shipped with 'coreutils' v7.0 and newer
-# Our shipped 'waitmax' is statically linked and crashes on recent Ubuntu releases
+# Our shipped 'waitmax' is statically linked and crashes on some Ubuntu releases
+# So if it's available, we defer to the 'timeout' command from 'coreutils' (>=v7.0)
+# We also cater for the busybox 'timeout' builtin command
+# Older busybox 'timeout' versions *require* '-t' to define the duration
+# Newer busybox 'timeout' versions (>=v1.30_0) have removed '-t' to align with 'coreutils'
+# ref: mirror/busybox@c9720a7
+# So if we're in busybox, we detect whether we need to insert '-t' into '$*'
+# Nb: busybox 'timeout' may default to SIGTERM, GNU's to SIGALRM
+# This means that 'waitmax' invocations MUST follow standard usage patterns
 if inpath timeout; then
     waitmax() {
-        # The busybox version of 'timeout' requires '-t' to define the duration
-        # So if we're in busybox, we need to insert '-t' into '$*'
-        # This means that 'waitmax' invocations MUST follow a standard pattern
         case "$(get_shell)" in
             (*busybox*)
-                # This translates calls like 'waitmax -s 9 5 somecommand'
-                #   to instead read like 'waitmax -s 9 -t 5 somecommand'
-                # Likewise, calls like 'waitmax 5 somecommand'
-                #   are translated to look like 'waitmax -t 5 somecommand'
-                # Nb: busybox 'timeout' defaults to SIGTERM, GNU's to SIGALRM
-                case "${1}" in
-                    (-s)
-                        _signal="${2}"
-                        shift 2
-                        set -- "-s ${_signal} -t ${*}"
-                    ;;
-                    (*) set -- "-t ${*}" ;;
-                esac
+                # Check 'timeout's help for a mention of '-t'
+                # If found, we modify the call to 'timeout' to inject '-t'
+                if timeout --help 2>&1 | grep -q -- "-t"; then
+                    # This translates calls like 'waitmax -s 9 5 somecommand'
+                    #   to instead read like 'waitmax -s 9 -t 5 somecommand'
+                    # Likewise, calls like 'waitmax 5 somecommand'
+                    #   are translated to look like 'waitmax -t 5 somecommand'
+                    case "${1}" in
+                        (-s)
+                            _signal="${2}"
+                            shift 2
+                            set -- "-s ${_signal} -t ${*}"
+                            unset -v _signal
+                        ;;
+                        (*) set -- "-t ${*}" ;;
+                    esac
+                fi
             ;;
         esac
         timeout "${@}"
-        unset -v _signal
     }
     export -f waitmax
 fi
